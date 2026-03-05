@@ -38,6 +38,7 @@ hardware = [
     "python-periphery>=2.4.1",
     "spidev>=3.5",
     "pyserial>=3.5",
+    "LoRaRf>=1.4.0",
 ]
 websocket = [
     "websockets>=11.0.0",

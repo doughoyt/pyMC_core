@@ -10,9 +10,10 @@ import random
 import time
 from typing import Optional, Union
 
+from LoRaRF.SX127x import SX127x, set_gpio_manager
+
 from .base import LoRaRadio
 from .gpio_manager import GPIOPinManager
-from .lora.LoRaRF.SX127x import SX127x, set_gpio_manager
 
 logger = logging.getLogger("SX1276_wrapper")
 
