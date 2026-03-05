@@ -25,11 +25,11 @@ from pymc_core.hardware.base import LoRaRadio
 from pymc_core.node.node import MeshNode
 
 
-def create_radio(radio_type: str = "rm95w", serial_port: str = "/dev/ttyUSB0") -> LoRaRadio:
+def create_radio(radio_type: str = "rfm95w", serial_port: str = "/dev/ttyUSB0") -> LoRaRadio:
     """Create a radio instance with configuration for specified hardware.
 
     Args:
-        radio_type: Type of radio hardware ("rm95w")
+        radio_type: Type of radio hardware ("rfm95w")
         serial_port: Serial port for KISS TNC (only used with "kiss-tnc" type)
 
     Returns:
@@ -45,7 +45,7 @@ def create_radio(radio_type: str = "rm95w", serial_port: str = "/dev/ttyUSB0") -
 
         # Radio configurations for different hardware
         configs = {
-            "rm95w": {
+            "rfm95w": {
                 "bus_id": 0,
                 "cs_id": 0,
                 "cs_pin": 7,
@@ -63,7 +63,7 @@ def create_radio(radio_type: str = "rm95w", serial_port: str = "/dev/ttyUSB0") -
         }
 
         if radio_type not in configs:
-            raise ValueError(f"Unknown radio type: {radio_type}. Use 'rm95w'")
+            raise ValueError(f"Unknown radio type: {radio_type}. Use 'rfm95w'")
 
         radio_kwargs = configs[radio_type]
         logger.debug(f"Radio configuration for {radio_type}: {radio_kwargs}")
@@ -84,13 +84,13 @@ def create_radio(radio_type: str = "rm95w", serial_port: str = "/dev/ttyUSB0") -
 
 
 def create_mesh_node(
-    node_name: str = "ExampleNode", radio_type: str = "rm95w", serial_port: str = "/dev/ttyUSB0"
+    node_name: str = "ExampleNode", radio_type: str = "rfm95w", serial_port: str = "/dev/ttyUSB0"
 ) -> tuple[MeshNode, LocalIdentity]:
     """Create a mesh node with radio.
 
     Args:
         node_name: Name for the mesh node
-        radio_type: Type of radio hardware ("rm95w")
+        radio_type: Type of radio hardware ("rfm95w")
         serial_port: Serial port for KISS TNC (only used with "kiss-tnc" type)
 
     Returns:

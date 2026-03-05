@@ -16,7 +16,7 @@ from pymc_core.protocol.constants import ADVERT_FLAG_IS_CHAT_NODE
 from pymc_core.protocol.packet_builder import PacketBuilder
 
 
-async def send_direct_advert(radio_type: str = "rm95w", serial_port: str = "/dev/ttyUSB0"):
+async def send_direct_advert(radio_type: str = "rfm95w", serial_port: str = "/dev/ttyUSB0"):
     # Create a mesh node with SX1276 radio
     mesh_node, identity = create_mesh_node("MyNode", radio_type, serial_port)
 
@@ -51,8 +51,8 @@ def main():
     parser = argparse.ArgumentParser(description="Send a direct advertisement packet")
     parser.add_argument(
         "--radio-type",
-        choices=["rm95w"],
-        default="rm95w",
+        choices=["rfm95w"],
+        default="rfm95w",
         help="Radio hardware type (default: rmf95w)",
     )
     parser.add_argument(
