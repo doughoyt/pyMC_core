@@ -560,7 +560,7 @@ class SX1276Radio(LoRaRadio):
 
             if True:  # Use full initialization
                 # Reset RF module and set to standby
-                if not self._basic_radio_setup(use_busy_check=True):
+                if not self._basic_radio_setup(use_busy_check=False):
                     return False
                 self.lora._fixResistanceAntenna()
                 # Configure TCXO, regulator, calibration and RF switch
