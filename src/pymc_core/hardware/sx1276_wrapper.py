@@ -210,7 +210,7 @@ class SX1276Radio(LoRaRadio):
         """Common radio setup: reset, standby, and LoRa packet type"""
         self.lora.reset()
         time.sleep(0.01)  # Give hardware time to complete reset
-        self.lora.setStandby(self.lora.STANDBY_RC)
+        self.lora.standby()
         time.sleep(0.01)  # Give hardware time to enter standby mode
 
         # Check if standby mode was set correctly (different methods for different boards)
@@ -558,7 +558,6 @@ class SX1276Radio(LoRaRadio):
                 else:
                     logger.warning(f"Could not setup RX LED pin {self.rxled_pin}")
 
-
             if True:  # Use full initialization
                 # Reset RF module and set to standby
                 if not self._basic_radio_setup(use_busy_check=True):
@@ -782,7 +781,7 @@ class SX1276Radio(LoRaRadio):
     async def _prepare_radio_for_tx(self) -> tuple[bool, list[float]]:
         """Prepare radio hardware for transmission. Returns (success, lbt_backoff_delays_ms)."""
         self._tx_done_event.clear()
-        self.lora.setStandby(self.lora.STANDBY_RC)
+        self.lora.standby()
         await asyncio.sleep(self.RADIO_TIMING_DELAY)  # Give hardware time to enter standby
         if self.lora.busyCheck():
             busy_wait = 0
@@ -970,7 +969,7 @@ class SX1276Radio(LoRaRadio):
         logger.debug("[TX->RX] Starting RX mode restoration after transmission")
         try:
             if self.lora:
-                self.lora.setStandby(self.lora.STANDBY_RC)
+                self.lora.standby()
                 self.lora.request(self.lora.RX_CONTINUOUS)
                 logger.debug("[TX->RX] RX mode restoration completed")
 
@@ -1262,7 +1261,7 @@ class SX1276Radio(LoRaRadio):
 
         try:
             # Put radio in standby mode before CAD configuration
-            self.lora.setStandby(self.lora.STANDBY_RC)
+            self.lora.standby()
             await asyncio.sleep(0.01)  # Give hardware time to enter standby
 
             # Clear any existing interrupt flags
@@ -1363,7 +1362,7 @@ class SX1276Radio(LoRaRadio):
             try:
                 # Full sequence required to prevent SX1276 lockups after CAD
                 self.lora.clearIrqStatus(0xFFFF)
-                self.lora.setStandby(self.lora.STANDBY_RC)
+                self.lora.standby()
                 await asyncio.sleep(0.001)
 
                 # Use standardized RX restoration method like everywhere else
