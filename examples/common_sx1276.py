@@ -25,11 +25,11 @@ from pymc_core.hardware.base import LoRaRadio
 from pymc_core.node.node import MeshNode
 
 
-def create_radio(radio_type: str = "waveshare", serial_port: str = "/dev/ttyUSB0") -> LoRaRadio:
+def create_radio(radio_type: str = "rm95w", serial_port: str = "/dev/ttyUSB0") -> LoRaRadio:
     """Create a radio instance with configuration for specified hardware.
 
     Args:
-        radio_type: Type of radio hardware ("waveshare", "uconsole", "meshadv-mini", or "kiss-tnc")
+        radio_type: Type of radio hardware ("rm95w")
         serial_port: Serial port for KISS TNC (only used with "kiss-tnc" type)
 
     Returns:
@@ -59,7 +59,6 @@ def create_radio(radio_type: str = "waveshare", serial_port: str = "/dev/ttyUSB0
                 "bandwidth": int(62.5 * 1000),
                 "coding_rate": 5,
                 "preamble_length": 17,
-                "is_waveshare": False,
             },
         }
 

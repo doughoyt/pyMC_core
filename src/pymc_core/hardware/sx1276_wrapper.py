@@ -33,7 +33,6 @@ class SX1276Radio(LoRaRadio):
         cs_id: int = 0,
         cs_pin: int = -1,
         reset_pin: int = 18,
-        busy_pin: int = 20,
         irq_pin: int = 16,
         txen_pin: int = 6,
         rxen_pin: int = -1,
@@ -46,7 +45,6 @@ class SX1276Radio(LoRaRadio):
         coding_rate: int = 5,
         preamble_length: int = 12,
         sync_word: int = 0x3444,
-        is_waveshare: bool = False,
         use_dio3_tcxo: bool = False,
         dio3_tcxo_voltage: float = 1.8,
         use_dio2_rf: bool = False,
@@ -503,8 +501,8 @@ class SX1276Radio(LoRaRadio):
             spi = LoRaSpi(self.bus_id, self.cs_id)
             if self.cs_pin != -1:
                 # Override CS pin for special boards (e.g., Waveshare HAT)
-                cs = LoRaGpio(self.cs_pin)
-            reset = LoRaGpio(self.reset_pin)
+                cs = LoRaGpio(0, self.cs_pin)
+            reset = LoRaGpio(0, self.reset_pin)
             self.lora = SX127x(spi, cs, reset)
 
             # Register GPIO interrupt using lightweight trampoline
@@ -518,7 +516,6 @@ class SX1276Radio(LoRaRadio):
                 logger.error(f"Failed to setup interrupt pin {self.irq_pin_number}")
                 raise RuntimeError(f"Could not setup IRQ pin {self.irq_pin_number}")
 
-            self.lora._busy = self.busy_pin
             self.lora._irq = self.irq_pin_number
             # Pass -1 for TXEN/RXEN to prevent SX127x driver from controlling them
             # The wrapper handles these pins correctly via _control_tx_rx_pins()
@@ -561,48 +558,8 @@ class SX1276Radio(LoRaRadio):
                 else:
                     logger.warning(f"Could not setup RX LED pin {self.rxled_pin}")
 
-            # Adaptive initialization based on board type
-            if self.is_waveshare:  # Waveshare HAT - use minimal initialization
-                # Basic radio setup
-                if not self._basic_radio_setup():
-                    return False
 
-                self.lora._fixResistanceAntenna()
-
-                rfFreq = int(self.frequency * 33554432 / 32000000)
-                self.lora.setRfFrequency(rfFreq)
-
-                self.lora.setBufferBaseAddress(0x00, 0x80)  # TX=0x00, RX=0x80
-
-                # Enable LDRO if symbol duration > 16ms (SF11/62.5kHz = 32.768ms)
-                symbol_duration_ms = (2**self.spreading_factor) / (self.bandwidth / 1000)
-                ldro = symbol_duration_ms > 16.0
-                logger.info(
-                    f"LDRO {'enabled' if ldro else 'disabled'} "
-                    f"(symbol duration: {symbol_duration_ms:.3f}ms)"
-                )
-                self.lora.setLoRaModulation(
-                    self.spreading_factor, self.bandwidth, self.coding_rate, ldro
-                )
-
-                self.lora.setLoRaPacket(
-                    self.lora.HEADER_EXPLICIT,
-                    self.preamble_length,
-                    64,  # Initial payload length
-                    True,  # CRC on
-                    False,  # IQ standard
-                )
-
-                # Use RadioLib-compatible PA configuration and optimized setTxPower
-                # This automatically configures PA based on requested power level
-                self.lora.setTxPower(self.tx_power, self.lora.TX_POWER_SX1276)
-
-                # Configure RX interrupts (critical for RX functionality!)
-                rx_mask = self._get_rx_irq_mask()
-                self.lora.clearIrqStatus(0xFFFF)
-                self.lora.setDioIrqParams(rx_mask, rx_mask, self.lora.IRQ_NONE, self.lora.IRQ_NONE)
-
-            else:  # Use full initialization
+            if True:  # Use full initialization
                 # Reset RF module and set to standby
                 if not self._basic_radio_setup(use_busy_check=True):
                     return False
