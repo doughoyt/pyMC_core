@@ -51,9 +51,9 @@ def main():
     parser = argparse.ArgumentParser(description="Send a direct advertisement packet")
     parser.add_argument(
         "--radio-type",
-        choices=["waveshare", "uconsole", "meshadv-mini", "kiss-tnc"],
-        default="waveshare",
-        help="Radio hardware type (default: waveshare)",
+        choices=["rm95w"],
+        default="rm95w",
+        help="Radio hardware type (default: rmf95w)",
     )
     parser.add_argument(
         "--serial-port",

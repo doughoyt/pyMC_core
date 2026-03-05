@@ -10,7 +10,7 @@ import random
 import time
 from typing import Optional, Union
 
-from LoRaRF.SX127x import SX127x, set_gpio_manager
+from LoRaRF.SX127x import SX127x,  LoRaSpi, LoRaGpio
 
 from .base import LoRaRadio
 from .gpio_manager import GPIOPinManager
