@@ -22,6 +22,15 @@ except ImportError:
     _SX1262_AVAILABLE = False
     SX1262Radio = None
 
+# Conditional import for SX1276Radio (requires spidev)
+try:
+    from .sx1276_wrapper import SX1276Radio
+
+    _SX1276_AVAILABLE = True
+except ImportError:
+    _SX1276_AVAILABLE = False
+    SX1276Radio = None
+
 __all__ = ["LoRaRadio"]
 
 # Add WsRadio to exports if available
@@ -32,3 +41,7 @@ if _WS_AVAILABLE:
 if _SX1262_AVAILABLE:
     __all__.append("SX1262Radio")
     __all__.append("SX1262Radio")
+
+# Add SX1276Radio to exports if available
+if _SX1276_AVAILABLE:
+    __all__.append("SX1276Radio")
