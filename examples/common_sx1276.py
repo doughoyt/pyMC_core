@@ -48,12 +48,11 @@ def create_radio(radio_type: str = "waveshare", serial_port: str = "/dev/ttyUSB0
             "rm95w": {
                 "bus_id": 0,
                 "cs_id": 0,
-                "cs_pin": 21,
-                "reset_pin": 18,
-                "busy_pin": 20,
+                "cs_pin": 7,
+                "reset_pin": 25,
                 "irq_pin": 16,
-                "txen_pin": 13,
-                "rxen_pin": 12,
+                "txen_pin": -1,
+                "rxen_pin": -1,
                 "frequency": int(910.525 * 1000000),  # US: 910.525 MHz
                 "tx_power": 22,
                 "spreading_factor": 7,

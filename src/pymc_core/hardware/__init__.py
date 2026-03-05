@@ -22,7 +22,7 @@ except ImportError:
     _SX1262_AVAILABLE = False
     SX1262Radio = None
 
-# Conditional import for SX1276Radio (requires spidev)
+# Conditional import for SX1276Radio (requires spidev, full LoRaRF library)
 try:
     from .sx1276_wrapper import SX1276Radio
 

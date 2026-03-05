@@ -10,7 +10,7 @@ import random
 import time
 from typing import Optional, Union
 
-from LoRaRF.SX127x import SX127x,  LoRaSpi, LoRaGpio
+from LoRaRF.SX127x import LoRaGpio, LoRaSpi, SX127x
 
 from .base import LoRaRadio
 from .gpio_manager import GPIOPinManager
@@ -59,7 +59,6 @@ class SX1276Radio(LoRaRadio):
             cs_id: SPI chip select ID (default: 0)
             cs_pin: Manual CS GPIO pin (-1 = use hardware CS, e.g. 21 for Waveshare HAT)
             reset_pin: GPIO pin for reset (default: 18)
-            busy_pin: GPIO pin for busy signal (default: 20)
             irq_pin: GPIO pin for interrupt (default: 16)
             txen_pin: GPIO pin for TX enable (default: 6)
             rxen_pin: GPIO pin for RX enable (default: -1 if not used)
@@ -72,7 +71,6 @@ class SX1276Radio(LoRaRadio):
             coding_rate: Coding rate (default: 5 for 4/5)
             preamble_length: Preamble length (default: 12)
             sync_word: Sync word (default: 0x3444 for public network)
-            is_waveshare: Use alternate initialization needed for Waveshare HAT
             use_dio3_tcxo: Enable DIO3 TCXO control (default: False)
             dio3_tcxo_voltage: TCXO reference voltage in volts (default: 1.8)
             use_dio2_rf: Enable DIO2 as RF switch control (default: False)
@@ -90,7 +88,6 @@ class SX1276Radio(LoRaRadio):
         self.cs_id = cs_id
         self.cs_pin = cs_pin
         self.reset_pin = reset_pin
-        self.busy_pin = busy_pin
         self.irq_pin_number = irq_pin  # Store pin number
         self.txen_pin = txen_pin
         self.rxen_pin = rxen_pin
@@ -105,7 +102,6 @@ class SX1276Radio(LoRaRadio):
         self.coding_rate = coding_rate
         self.preamble_length = preamble_length
         self.sync_word = sync_word
-        self.is_waveshare = is_waveshare
         self.use_dio3_tcxo = use_dio3_tcxo
         self.dio3_tcxo_voltage = dio3_tcxo_voltage
         self.use_dio2_rf = use_dio2_rf
@@ -128,7 +124,7 @@ class SX1276Radio(LoRaRadio):
 
         # Share GPIO manager instance with SX127x low-level driver
         # This ensures singleton behavior - all GPIO access goes through one manager
-        set_gpio_manager(self._gpio_manager)
+        # set_gpio_manager(self._gpio_manager)
 
         self._tx_done_event = asyncio.Event()
         self._rx_done_event = asyncio.Event()
@@ -502,7 +498,14 @@ class SX1276Radio(LoRaRadio):
 
         try:
             logger.debug("Initializing SX1276 radio...")
-            self.lora = SX127x()
+
+            # SPI and GPIO Pins setting
+            spi = LoRaSpi(self.bus_id, self.cs_id)
+            if self.cs_pin != -1:
+                # Override CS pin for special boards (e.g., Waveshare HAT)
+                cs = LoRaGpio(self.cs_pin)
+            reset = LoRaGpio(self.reset_pin)
+            self.lora = SX127x(spi, cs, reset)
 
             # Register GPIO interrupt using lightweight trampoline
             self.irq_pin = self._gpio_manager.setup_interrupt_pin(
@@ -515,13 +518,6 @@ class SX1276Radio(LoRaRadio):
                 logger.error(f"Failed to setup interrupt pin {self.irq_pin_number}")
                 raise RuntimeError(f"Could not setup IRQ pin {self.irq_pin_number}")
 
-            # SPI and GPIO Pins setting
-            self.lora.setSpi(self.bus_id, self.cs_id)
-            if self.cs_pin != -1:
-                # Override CS pin for special boards (e.g., Waveshare HAT)
-                self.lora.setManualCsPin(self.cs_pin)
-
-            self.lora._reset = self.reset_pin
             self.lora._busy = self.busy_pin
             self.lora._irq = self.irq_pin_number
             # Pass -1 for TXEN/RXEN to prevent SX127x driver from controlling them
