@@ -1,269 +1,136 @@
 import time
+from threading import Thread
+from typing import Optional
 
-import spidev
-
-from ...signal_utils import snr_register_to_db
-from .base import BaseLoRa
-
-spi = spidev.SpiDev()
-
-from gpiozero import Device
-
-# Force gpiozero to use LGPIOFactory - no RPi.GPIO fallback
-from gpiozero.pins.lgpio import LGPIOFactory
-
-Device.pin_factory = LGPIOFactory()
-
-# GPIOZero helpers for pin management
-from gpiozero import DigitalInputDevice, DigitalOutputDevice
-
-_gpio_pins = {}
+from .base import BaseLoRa, LoRaGpio, LoRaSpi
 
 
-def _get_output(pin):
-    if pin not in _gpio_pins:
-        _gpio_pins[pin] = DigitalOutputDevice(pin)
-    return _gpio_pins[pin]
+class SX127x(BaseLoRa):
+    """Class for SX1276/77/78/79 LoRa chipsets from Semtech"""
 
+    # SX127X LoRa Mode Register Map
+    REG_FIFO = 0x00
+    REG_OP_MODE = 0x01
+    REG_FRF_MSB = 0x06
+    REG_FRF_MID = 0x07
+    REG_FRF_LSB = 0x08
+    REG_PA_CONFIG = 0x09
+    REG_PA_RAMP = 0x0A
+    REG_OCP = 0x0B
+    REG_LNA = 0x0C
+    REG_FIFO_ADDR_PTR = 0x0D
+    REG_FIFO_TX_BASE_ADDR = 0x0E
+    REG_FIFO_RX_BASE_ADDR = 0x0F
+    REG_FIFO_RX_CURRENT_ADDR = 0x10
+    REG_IRQ_FLAGS_MASK = 0x11
+    REG_IRQ_FLAGS = 0x12
+    REG_RX_NB_BYTES = 0x13
+    REG_RX_HEADR_CNT_VALUE_MSB = 0x14
+    REG_RX_HEADR_CNT_VALUE_LSB = 0x15
+    REG_RX_PKT_CNT_VALUE_MSB = 0x16
+    REG_RX_PKT_CNT_VALUE_LSB = 0x17
+    REG_MODEB_STAT = 0x18
+    REG_PKT_SNR_VALUE = 0x19
+    REG_PKT_RSSI_VALUE = 0x1A
+    REG_RSSI_VALUE = 0x1B
+    REG_HOP_CHANNEL = 0x1C
+    REG_MODEM_CONFIG_1 = 0x1D
+    REG_MODEM_CONFIG_2 = 0x1E
+    REG_SYMB_TIMEOUT_LSB = 0x1F
+    REG_PREAMBLE_MSB = 0x20
+    REG_PREAMBLE_LSB = 0x21
+    REG_PAYLOAD_LENGTH = 0x22
+    REG_MAX_PAYLOAD_LENGTH = 0x23
+    REG_HOP_PERIOD = 0x24
+    REG_FIFO_RX_BYTE_ADDR = 0x25
+    REG_MODEM_CONFIG_3 = 0x26
+    REG_FREQ_ERROR_MSB = 0x28
+    REG_FREQ_ERROR_MID = 0x29
+    REG_FREQ_ERROR_LSB = 0x2A
+    REG_RSSI_WIDEBAND = 0x2C
+    REG_FREQ1 = 0x2F
+    REG_FREQ2 = 0x30
+    REG_DETECTION_OPTIMIZE = 0x31
+    REG_INVERTIQ = 0x33
+    REG_HIGH_BW_OPTIMIZE_1 = 0x36
+    REG_DETECTION_THRESHOLD = 0x37
+    REG_SYNC_WORD = 0x39
+    REG_HIGH_BW_OPTIMIZE_2 = 0x3A
+    REG_INVERTIQ2 = 0x3B
+    REG_DIO_MAPPING_1 = 0x40
+    REG_DIO_MAPPING_2 = 0x41
+    REG_VERSION = 0x42
+    REG_TCXO = 0x4B
+    REG_PA_DAC = 0x4D
+    REG_FORMER_TEMP = 0x5B
+    REG_AGC_REF = 0x61
+    REG_AGC_THRESH_1 = 0x62
+    REG_AGC_THRESH_2 = 0x63
+    REG_AGC_THRESH_3 = 0x64
+    REG_PLL = 0x70
 
-def _get_input(pin):
-    if pin not in _gpio_pins:
-        _gpio_pins[pin] = DigitalInputDevice(pin)
-    return _gpio_pins[pin]
+    # Modem options
+    FSK_MODEM = 0x00  # GFSK packet type
+    LORA_MODEM = 0x01  # LoRa packet type
+    OOK_MODEM = 0x02  # OOK packet type
 
+    # Long range mode and modulation type
+    LONG_RANGE_MODE = 0x80  # GFSK packet type
+    MODULATION_OOK = 0x20  # OOK packet type
+    MODULATION_FSK = 0x00  # LoRa packet type
 
-def _rssi_register_to_dbm(raw_value):
-    """Convert RSSI register units (-0.5 dBm per LSB) into dBm."""
-    if raw_value is None:
-        return 0.0
-    return raw_value / -2.0
+    # Devices modes
+    MODE_SLEEP = 0x00  # sleep
+    MODE_STDBY = 0x01  # standby
+    MODE_TX = 0x03  # transmit
+    MODE_RX_CONTINUOUS = 0x05  # continuous receive
+    MODE_RX_SINGLE = 0x06  # single receive
+    MODE_CAD = 0x07  # channel activity detection (CAD)
 
-
-class SX126x(BaseLoRa):
-    """Class for SX1261/62/68 and LLCC68 LoRa chipsets from Semtech"""
-
-    # SX126X register map
-    REG_FSK_WHITENING_INITIAL_MSB = 0x06B8
-    REG_FSK_CRC_INITIAL_MSB = 0x06BC
-    REG_FSK_SYNC_WORD_0 = 0x06C0
-    REG_FSK_NODE_ADDRESS = 0x06CD
-    REG_IQ_POLARITY_SETUP = 0x0736
-    REG_LORA_SYNC_WORD_MSB = 0x0740
-    REG_TX_MODULATION = 0x0889
-    REG_RX_GAIN = 0x08AC
-    REG_TX_CLAMP_CONFIG = 0x08D8
-    REG_OCP_CONFIGURATION = 0x08E7
-    REG_RTC_CONTROL = 0x0902
-    REG_XTA_TRIM = 0x0911
-    REG_XTB_TRIM = 0x0912
-    REG_EVENT_MASK = 0x0944
-
-    # SetSleep
-    SLEEP_COLD_START = 0x00  # sleep mode: cold start, configuration is lost (default)
-    SLEEP_WARM_START = 0x04  #             warm start, configuration is retained
-    SLEEP_COLD_START_RTC = 0x01  #             cold start and wake on RTC timeout
-    SLEEP_WARM_START_RTC = 0x05  #             warm start and wake on RTC timeout
-
-    # SetStandby
-    STANDBY_RC = 0x00  # standby mode: using 13 MHz RC oscillator
-    STANDBY_XOSC = 0x01  #               using 32 MHz crystal oscillator
-
-    # SetTx
-    TX_SINGLE = 0x000000  # Tx timeout duration: no timeout (Rx single mode)
-
-    # SetRx
+    # Rx operation mode
     RX_SINGLE = 0x000000  # Rx timeout duration: no timeout (Rx single mode)
     RX_CONTINUOUS = 0xFFFFFF  #                      infinite (Rx continuous mode)
 
-    # SetRegulatorMode
-    REGULATOR_LDO = 0x00  # set regulator mode: LDO (default)
-    REGULATOR_DC_DC = 0x01  #                     DC-DC
+    # TX power options
+    TX_POWER_RFO = 0x00  # output power is limited to +14 dBm
+    TX_POWER_PA_BOOST = 0x80  # output power is limited to +20 dBm
 
-    # CalibrateImage
-    CAL_IMG_430 = 0x6B  # ISM band: 430-440 Mhz
-    CAL_IMG_440 = 0x6F
-    CAL_IMG_470 = 0x75  #           470-510 Mhz
-    CAL_IMG_510 = 0x81
-    CAL_IMG_779 = 0xC1  #           779-787 Mhz
-    CAL_IMG_787 = 0xC5
-    CAL_IMG_863 = 0xD7  #           863-870 Mhz
-    CAL_IMG_870 = 0xDB
-    CAL_IMG_902 = 0xE1  #           902-928 Mhz
-    CAL_IMG_928 = 0xE9
-
-    # SetPaConfig
-    TX_POWER_SX1261 = 0x01  # device version for TX power: SX1261
-    TX_POWER_SX1262 = 0x02  #                              SX1262
-    TX_POWER_SX1268 = 0x08  #                              SX1268
-
-    # SetRxTxFallbackMode
-    FALLBACK_FS = 0x40  # after Rx/Tx go to: FS mode
-    FALLBACK_STDBY_XOSC = 0x30  #                    standby mode with crystal oscillator
-    FALLBACK_STDBY_RC = 0x20  #                    standby mode with RC oscillator (default)
-
-    # SetDioIrqParams
-    IRQ_TX_DONE = 0x0001  # packet transmission completed
-    IRQ_RX_DONE = 0x0002  # packet received
-    IRQ_PREAMBLE_DETECTED = 0x0004  # preamble detected
-    IRQ_SYNC_WORD_VALID = 0x0008  # valid sync word detected
-    IRQ_HEADER_VALID = 0x0010  # valid LoRa header received
-    IRQ_HEADER_ERR = 0x0020  # LoRa header CRC error
-    IRQ_CRC_ERR = 0x0040  # wrong CRC received
-    IRQ_CAD_DONE = 0x0080  # channel activity detection finished
-    IRQ_CAD_DETECTED = 0x0100  # channel activity detected
-    IRQ_TIMEOUT = 0x0200  # Rx or Tx timeout
-    IRQ_ALL = 0x03FF  # all interrupts
-    IRQ_NONE = 0x0000  # no interrupts
-
-    # SetDio2AsRfSwitch
-    DIO2_AS_IRQ = 0x00  # DIO2 configuration: IRQ
-    DIO2_AS_RF_SWITCH = 0x01  #                     RF switch control
-
-    # SetDio3AsTcxoCtrl
-    DIO3_OUTPUT_1_6 = 0x00  # DIO3 voltage output for TCXO: 1.6 V
-    DIO3_OUTPUT_1_7 = 0x01  #                               1.7 V
-    DIO3_OUTPUT_1_8 = 0x02  #                               1.8 V
-    DIO3_OUTPUT_2_2 = 0x03  #                               2.2 V
-    DIO3_OUTPUT_2_4 = 0x04  #                               2.4 V
-    DIO3_OUTPUT_2_7 = 0x05  #                               2.7 V
-    DIO3_OUTPUT_3_0 = 0x06  #                               3.0 V
-    DIO3_OUTPUT_3_3 = 0x07  #                               3.3 V
-    TCXO_DELAY_2_5 = 0x0140  # TCXO delay time: 2.5 ms
-    TCXO_DELAY_5 = 0x0280  #                  5 ms
-    TCXO_DELAY_10 = 0x0560  #                  10 ms
-
-    # SetRfFrequency
-    RF_FREQUENCY_XTAL = 32000000  # XTAL frequency used for RF frequency calculation
-    RF_FREQUENCY_NOM = 33554432  # used for RF frequency calculation
-
-    # SetPacketType
-    FSK_MODEM = 0x00  # GFSK packet type
-    LORA_MODEM = 0x01  # LoRa packet type
-
-    # SetTxParams
-    PA_RAMP_10U = 0x00  # ramp time: 10 us
-    PA_RAMP_20U = 0x01  #            20 us
-    PA_RAMP_40U = 0x02  #            40 us
-    PA_RAMP_80U = 0x03  #            80 us
-    PA_RAMP_200U = 0x04  #            200 us
-    PA_RAMP_800U = 0x05  #            800 us
-    PA_RAMP_1700U = 0x06  #            1700 us
-    PA_RAMP_3400U = 0x07  #            3400 us
-
-    # SetModulationParams
-    BW_7800 = 0x00  # LoRa bandwidth: 7.8 kHz
-    BW_10400 = 0x08  #                 10.4 kHz
-    BW_15600 = 0x01  #                 15.6 kHz
-    BW_20800 = 0x09  #                 20.8 kHz
-    BW_31250 = 0x02  #                 31.25 kHz
-    BW_41700 = 0x0A  #                 41.7 kHz
-    BW_62500 = 0x03  #                 62.5 kHz
-    BW_125000 = 0x04  #                 125.0 kHz
-    BW_250000 = 0x05  #                 250.0 kHz
-    BW_500000 = 0x06  #                 500.0 kHz
-    CR_4_4 = 0x00  # LoRa coding rate: 4/4 (no coding rate)
-    CR_4_5 = 0x01  #                   4/5
-    CR_4_6 = 0x01  #                   4/6
-    CR_4_7 = 0x01  #                   4/7
-    CR_4_8 = 0x01  #                   4/8
-    LDRO_OFF = 0x00  # LoRa low data rate optimization: disabled
-    LDRO_ON = 0x01  #                                  enabled
-
-    # SetModulationParams for FSK packet type
-    PULSE_NO_FILTER = 0x00  # FSK pulse shape: no filter applied
-    PULSE_GAUSSIAN_BT_0_3 = 0x08  #                  Gaussian BT 0.3
-    PULSE_GAUSSIAN_BT_0_5 = 0x09  #                  Gaussian BT 0.5
-    PULSE_GAUSSIAN_BT_0_7 = 0x0A  #                  Gaussian BT 0.7
-    PULSE_GAUSSIAN_BT_1 = 0x0B  #                  Gaussian BT 1
-    BW_4800 = 0x1F  # FSK bandwidth: 4.8 kHz DSB
-    BW_5800 = 0x17  #                5.8 kHz DSB
-    BW_7300 = 0x0F  #                7.3 kHz DSB
-    BW_9700 = 0x1E  #                9.7 kHz DSB
-    BW_11700 = 0x16  #                11.7 kHz DSB
-    BW_14600 = 0x0E  #                14.6 kHz DSB
-    BW_19500 = 0x1D  #                19.5 kHz DSB
-    BW_23400 = 0x15  #                23.4 kHz DSB
-    BW_29300 = 0x0D  #                29.3 kHz DSB
-    BW_39000 = 0x1C  #                39 kHz DSB
-    BW_46900 = 0x14  #                46.9 kHz DSB
-    BW_58600 = 0x0C  #                58.6 kHz DSB
-    BW_78200 = 0x1B  #                78.2 kHz DSB
-    BW_93800 = 0x13  #                93.8 kHz DSB
-    BW_117300 = 0x0B  #                117.3 kHz DSB
-    BW_156200 = 0x1A  #                156.2 kHz DSB
-    BW_187200 = 0x12  #                187.2 kHz DSB
-    BW_234300 = 0x0A  #                232.3 kHz DSB
-    BW_312000 = 0x19  #                312 kHz DSB
-    BW_373600 = 0x11  #                373.6 kHz DSB
-    BW_467000 = 0x09  #                476 kHz DSB
-
-    # SetPacketParams
-    HEADER_EXPLICIT = 0x00  # LoRa header mode: explicit
-    HEADER_IMPLICIT = 0x01  #                   implicit
-    CRC_OFF = 0x00  # LoRa CRC mode: disabled
-    CRC_ON = 0x01  #                enabled
-    IQ_STANDARD = 0x00  # LoRa IQ setup: standard
-    IQ_INVERTED = 0x01  #                inverted
-
-    # SetPacketParams for FSK packet type
-    PREAMBLE_DET_LEN_OFF = 0x00  # FSK preamble detector length: off
-    PREAMBLE_DET_LEN_8 = 0x04  #                               8-bit
-    PREAMBLE_DET_LEN_16 = 0x05  #                               16-bit
-    PREAMBLE_DET_LEN_24 = 0x06  #                               24-bit
-    PREAMBLE_DET_LEN_32 = 0x07  #                               32-bit
-    ADDR_COMP_OFF = 0x00  # FSK address filtering: off
-    ADDR_COMP_NODE = 0x01  #                        filtering on node address
-    ADDR_COMP_ALL = 0x02  #                        filtering on node and broadcast address
-    PACKET_KNOWN = 0x00  # FSK packet type: the packet length known on both side
-    PACKET_VARIABLE = 0x01  #                  the packet length on variable size
-    CRC_0 = 0x01  # FSK CRC type: no CRC
-    CRC_1 = 0x00  #               CRC computed on 1 byte
-    CRC_2 = 0x02  #               CRC computed on 2 byte
-    CRC_1_INV = 0x04  #               CRC computed on 1 byte and inverted
-    CRC_2_INV = 0x06  #               CRC computed on 2 byte and inverted
-    WHITENING_OFF = 0x00  # FSK whitening: no encoding
-    WHITENING_ON = 0x01  #                whitening enable
-
-    # SetCadParams
-    CAD_ON_1_SYMB = 0x00  # number of symbols used for CAD: 1
-    CAD_ON_2_SYMB = 0x01  #                                 2
-    CAD_ON_4_SYMB = 0x02  #                                 4
-    CAD_ON_8_SYMB = 0x03  #                                 8
-    CAD_ON_16_SYMB = 0x04  #                                 16
-    CAD_EXIT_STDBY = 0x00  # after CAD is done, always exit to STDBY_RC mode
-    CAD_EXIT_RX = 0x01  # after CAD is done, exit to Rx mode if activity is detected
-
-    # GetStatus
-    STATUS_DATA_AVAILABLE = 0x04  # command status: packet received and data can be retrieved
-    STATUS_CMD_TIMEOUT = 0x06  #                 SPI command timed out
-    STATUS_CMD_ERROR = 0x08  #                 invalid SPI command
-    STATUS_CMD_FAILED = 0x0A  #                 SPI command failed to execute
-    STATUS_CMD_TX_DONE = 0x0C  #                 packet transmission done
-    STATUS_MODE_STDBY_RC = 0x20  # current chip mode: STDBY_RC
-    STATUS_MODE_STDBY_XOSC = 0x30  #                    STDBY_XOSC
-    STATUS_MODE_FS = 0x40  #                    FS
-    STATUS_MODE_RX = 0x50  #                    RX
-    STATUS_MODE_TX = 0x60  #                    TX
-
-    # GetDeviceErrors
-    RC64K_CALIB_ERR = 0x0001  # device errors: RC64K calibration failed
-    RC13M_CALIB_ERR = 0x0002  #                RC13M calibration failed
-    PLL_CALIB_ERR = 0x0004  #                PLL calibration failed
-    ADC_CALIB_ERR = 0x0008  #                ADC calibration failed
-    IMG_CALIB_ERR = 0x0010  #                image calibration failed
-    XOSC_START_ERR = 0x0020  #                crystal oscillator failed to start
-    PLL_LOCK_ERR = 0x0040  #                PLL failed to lock
-    PA_RAMP_ERR = 0x0100  #                PA ramping failed
-
-    # LoraSyncWord
-    LORA_SYNC_WORD_PUBLIC = 0x3444  # LoRa SyncWord for public network
-    LORA_SYNC_WORD_PRIVATE = 0x0741  # LoRa SyncWord for private network (default)
-
-    # RxGain
+    # RX gain options
     RX_GAIN_POWER_SAVING = 0x00  # gain used in Rx mode: power saving gain (default)
     RX_GAIN_BOOSTED = 0x01  #                       boosted gain
-    POWER_SAVING_GAIN = 0x94  # power saving gain register value
-    BOOSTED_GAIN = 0x96  # boosted gain register value
+    RX_GAIN_AUTO = 0x00  # option enable auto gain controller (AGC)
+
+    # Header type
+    HEADER_EXPLICIT = 0x00  # explicit header mode
+    HEADER_IMPLICIT = 0x01  # implicit header mode
+
+    # LoRa syncword
+    SYNCWORD_LORAWAN = 0x34  # reserved LoRaWAN syncword
+
+    # Oscillator options
+    OSC_CRYSTAL = 0x00  # crystal oscillator with external crystal
+    OSC_TCXO = 0x10  # external clipped sine TCXO AC-connected to XTA pin
+
+    # DIO mapping
+    DIO0_RX_DONE = 0x00  # set DIO0 interrupt for: RX done
+    DIO0_TX_DONE = 0x40  #                         TX done
+    DIO0_CAD_DONE = 0x80  #                         CAD done
+
+    # IRQ flags
+    IRQ_CAD_DETECTED = 0x01  # Valid Lora signal detected during CAD operation
+    IRQ_FHSS_CHANGE = 0x02  # FHSS change channel interrupt
+    IRQ_CAD_DONE = 0x04  # channel activity detection finished
+    IRQ_TX_DONE = 0x08  # packet transmission completed
+    IRQ_HEADER_VALID = 0x10  # valid LoRa header received
+    IRQ_CRC_ERR = 0x20  # wrong CRC received
+    IRQ_RX_DONE = 0x40  # packet received
+    IRQ_RX_TIMEOUT = 0x80  # waiting packet received timeout
+
+    # Rssi offset
+    RSSI_OFFSET_LF = 164  # low band frequency RSSI offset
+    RSSI_OFFSET_HF = 157  # high band frequency RSSI offset
+    RSSI_OFFSET = 139  # frequency RSSI offset for SX1272
+    BAND_THRESHOLD = 525e6  # threshold between low and high band frequency
 
     # TX and RX operation status
     STATUS_DEFAULT = 0  # default status (false)
@@ -281,23 +148,14 @@ class SX126x(BaseLoRa):
     STATUS_CAD_DONE = 12
 
     # SPI and GPIO pin setting
-    _bus = 0
-    _cs = 0
-    _reset = 22
-    _busy = 23
-    _cs_define = 21
-    _irq = -1
-    _txen = -1
-    _rxen = -1
-    _wake = -1
-    _busyTimeout = 5000
-    _spiSpeed = 7800000
-    _txState = False
-    _rxState = False
+    _irqTimeout = 10000
+    _txState = LoRaGpio.LOW
+    _rxState = LoRaGpio.LOW
 
     # LoRa setting
     _dio = 1
     _modem = LORA_MODEM
+    _frequency = 915000000
     _sf = 7
     _bw = 125000
     _cr = 5
@@ -309,7 +167,7 @@ class SX126x(BaseLoRa):
     _invertIq = False
 
     # Operation properties
-    _bufferIndex = 0
+    _monitoring = None
     _payloadTxRx = 32
     _statusWait = STATUS_DEFAULT
     _statusIrq = STATUS_DEFAULT
@@ -319,483 +177,316 @@ class SX126x(BaseLoRa):
     _onTransmit = None
     _onReceive = None
 
-    ### COMMON OPERATIONAL METHODS ###
-
-    def begin(
+    def __init__(
         self,
-        bus: int = _bus,
-        cs: int = _cs,
-        reset: int = _reset,
-        busy: int = _busy,
-        irq: int = _irq,
-        txen: int = _txen,
-        rxen: int = _rxen,
-        wake: int = _wake,
+        spi: LoRaSpi,
+        cs: LoRaGpio,
+        reset: LoRaGpio,
+        irq: Optional[LoRaGpio] = None,
+        txen: Optional[LoRaGpio] = None,
+        rxen: Optional[LoRaGpio] = None,
     ):
-        # set spi and gpio pins
-        self.setSpi(bus, cs)
-        self.setPins(reset, busy, irq, txen, rxen, wake)
-        # perform device reset
-        self.reset()
-
-        # check if device connect and set modem to LoRa
-        self.setStandby(self.STANDBY_RC)
-        if self.getMode() != self.STATUS_MODE_STDBY_RC:
-            return False
-        self.setPacketType(self.LORA_MODEM)
-        self._fixResistanceAntenna()
-        return True
-
-    def end(self):
-        self.sleep(self.SLEEP_COLD_START)
-        spi.close()
-        for pin in _gpio_pins.values():
-            pin.close()
-
-    def reset(self) -> bool:
-        # put reset pin to low then wait busy pin to low
-        _get_output(self._reset).off()
-        time.sleep(0.001)
-        _get_output(self._reset).on()
-        return not self.busyCheck()
-
-    def sleep(self, option=SLEEP_WARM_START):
-        # put device in sleep mode, wait for 500 us to enter sleep mode
-        self.standby()
-        self.setSleep(option)
-        time.sleep(0.0005)
-
-    def wake(self):
-        # wake device by set wake pin (cs pin) to low before spi transaction and put device in standby mode
-        if self._wake != -1:
-            _get_output(self._wake).off()
-            time.sleep(0.0005)
-        self.setStandby(self.STANDBY_RC)
-        self._fixResistanceAntenna()
-
-    def standby(self, option=STANDBY_RC):
-        self.setStandby(option)
-
-    def busyCheck(self, timeout: int = _busyTimeout):
-        # wait for busy pin to LOW or timeout reached
-        t = time.time()
-        while _get_input(self._busy).value:
-            if (time.time() - t) > (timeout / 1000):
-                return True
-        return False
-
-    def setFallbackMode(self, fallbackMode):
-        self.setRxTxFallbackMode(fallbackMode)
-
-    def getMode(self) -> int:
-        return self.getStatus() & 0x70
-
-    ### HARDWARE CONFIGURATION METHODS ###
-
-    def setSpi(self, bus: int, cs: int, speed: int = _spiSpeed):
-        self._bus = bus
+        self._spi = spi
         self._cs = cs
-        self._spiSpeed = speed
-
-        # Fix CS pin mapping based on standard Raspberry Pi SPI pinout
-        if bus == 0:  # SPI0
-            if cs == 0:
-                self._cs_define = 8  # CE0 = GPIO 8
-            elif cs == 1:
-                self._cs_define = 7  # CE1 = GPIO 7
-            else:
-                self._cs_define = 8  # Default to GPIO 8
-        elif bus == 1:  # SPI1
-            if cs == 0:
-                # OVERRIDE: GPIO 18 is busy on ClockworkPi/Heltec boards
-                # Use GPIO 17 instead (confirmed available)
-                self._cs_define = 17  # Override: GPIO 17 instead of standard GPIO 18
-            elif cs == 1:
-                self._cs_define = 17  # CE1 = GPIO 17
-            else:
-                self._cs_define = 17  # Default to GPIO 17 (safe alternative)
-        else:
-            # Keep original hardcoded value for unknown buses
-            self._cs_define = 21
-
-        print(f"[SX126x] SPI configured: Bus {bus}, CS {cs} -> GPIO {self._cs_define}")
-
-        # open spi line and set bus id, chip select, and spi speed
-        spi.open(bus, cs)
-        spi.max_speed_hz = speed
-        spi.lsbfirst = False
-        spi.mode = 0
-
-    def setPins(
-        self,
-        reset: int,
-        busy: int,
-        irq: int = -1,
-        txen: int = -1,
-        rxen: int = -1,
-        wake: int = -1,
-    ):
         self._reset = reset
-        self._busy = busy
         self._irq = irq
         self._txen = txen
         self._rxen = rxen
-        self._wake = wake
-        # gpiozero pins are initialized on first use by _get_output/_get_input
-        _get_output(reset)
-        _get_input(busy)
-        _get_output(self._cs_define)
-        # Only create a DigitalInputDevice for IRQ if not already managed externally
-        # (e.g., by main driver with gpiozero.Button). This avoids double allocation errors.
-        # If you use a Button in the main driver, do NOT call _get_input here.
-        # Commented out to prevent double allocation:
-        # if irq != -1:
-        #     _get_input(irq)
-        if txen != -1:
-            _get_output(txen)
-        # if rxen != -1: _get_output(rxen)
 
-    def setRfIrqPin(self, dioPinSelect: int):
-        if dioPinSelect == 2 or dioPinSelect == 3:
-            self._dio = dioPinSelect
-        else:
-            self._dio = 1
+    ### COMMON OPERATIONAL METHODS ###
 
-    def setDio2RfSwitch(self, enable: bool = True):
-        if enable:
-            self.setDio2AsRfSwitchCtrl(self.DIO2_AS_RF_SWITCH)
-        else:
-            self.setDio2AsRfSwitchCtrl(self.DIO2_AS_IRQ)
+    def begin(self) -> bool:
+        # perform device reset
+        if not self.reset():
+            return False
 
-    def setDio3TcxoCtrl(self, tcxoVoltage, delayTime):
-        self.setDio3AsTcxoCtrl(tcxoVoltage, delayTime)
-        self.setStandby(self.STANDBY_RC)
-        self.calibrate(0xFF)
+        # set modem to LoRa
+        self.setModem(self.LORA_MODEM)
+        # set tx power and rx gain
+        self.setTxPower(17, self.TX_POWER_PA_BOOST)
+        self.setRxGain(self.RX_GAIN_BOOSTED, self.RX_GAIN_AUTO)
+        return True
 
-    def setXtalCap(self, xtalA, xtalB):
-        self.setStandby(self.STANDBY_XOSC)
-        self.writeRegister(self.REG_XTA_TRIM, (xtalA, xtalB), 2)
-        self.setStandby(self.STANDBY_RC)
-        self.calibrate(0xFF)
+    def end(self):
+        self.sleep()
 
-    def setRegulator(self, regMode):
-        self.setRegulatorMode(regMode)
+    def reset(self):
+        # put reset pin to low then wait 5 ms
+        self._reset.output(LoRaGpio.LOW)
+        time.sleep(0.001)
+        self._reset.output(LoRaGpio.HIGH)
+        time.sleep(0.005)
+        # wait until device connected, return false when device too long to respond
+        t = time.time()
+        version = 0x00
+        while version != 0x12 and version != 0x22:
+            version = self.readRegister(self.REG_VERSION)
+            if time.time() - t > 1:
+                return False
+        return True
 
-    def setCurrentProtection(self, level):
-        # avoid wrap-around of OCP register, which has 6bits
-        if level > 63:
-            level = 63
-        self.writeRegister(self.REG_OCP_CONFIGURATION, (level,), 1)
+    def sleep(self):
+        # put device in sleep mode
+        self.writeRegister(self.REG_OP_MODE, self._modem | self.MODE_SLEEP)
+
+    def wake(self):
+        # wake device by put in standby mode
+        self.writeRegister(self.REG_OP_MODE, self._modem | self.MODE_STDBY)
+
+    def standby(self):
+        self.writeRegister(self.REG_OP_MODE, self._modem | self.MODE_STDBY)
+
+    ### HARDWARE CONFIGURATION METHODS ###
+
+    def setSpiSpeed(self, speed: int):
+        self._spi.speed = speed
+
+    def setCurrentProtection(self, current: int):
+        # calculate ocp trim
+        ocpTrim = 27
+        if current <= 120:
+            ocpTrim = int((current - 45) / 5)
+        elif current <= 240:
+            ocpTrim = int((current + 30) / 10)
+        # set over current protection config
+        self.writeRegister(self.REG_OCP, 0x20 | ocpTrim)
+
+    def setOscillator(self, option: int):
+        cfg = self.OSC_CRYSTAL
+        if option == self.OSC_TCXO:
+            cfg = self.OSC_TCXO
+        self.writeRegister(self.REG_TCXO, cfg)
 
     ### MODEM, MODULATION PARAMETER, AND PACKET PARAMETER SETUP METHODS ###
 
-    def setModem(self, modem):
-        self._modem = modem
-        self.setStandby(self.STANDBY_RC)
-        self.setPacketType(modem)
+    def setModem(self, modem: int):
+        if modem == self.LORA_MODEM:
+            self._modem = self.LONG_RANGE_MODE
+        elif modem == self.FSK_MODEM:
+            self._modem = self.MODULATION_FSK
+        else:
+            self._modem = self.MODULATION_OOK
+        self.sleep()
+        self.writeRegister(self.REG_OP_MODE, self._modem | self.MODE_STDBY)
 
     def setFrequency(self, frequency: int):
-        # perform image calibration before set frequency
-        if frequency < 446000000:
-            calFreqMin = self.CAL_IMG_430
-            calFreqMax = self.CAL_IMG_440
-        elif frequency < 734000000:
-            calFreqMin = self.CAL_IMG_470
-            calFreqMax = self.CAL_IMG_510
-        elif frequency < 828000000:
-            calFreqMin = self.CAL_IMG_779
-            calFreqMax = self.CAL_IMG_787
-        elif frequency < 877000000:
-            calFreqMin = self.CAL_IMG_863
-            calFreqMax = self.CAL_IMG_870
+        self._frequency = frequency
+        # calculate frequency
+        frf = int((frequency << 19) / 32000000)
+        self.writeRegister(self.REG_FRF_MSB, (frf >> 16) & 0xFF)
+        self.writeRegister(self.REG_FRF_MID, (frf >> 8) & 0xFF)
+        self.writeRegister(self.REG_FRF_LSB, frf & 0xFF)
+
+    def setTxPower(self, txPower: int, paPin: int):
+        # maximum TX power is 20 dBm and 14 dBm for RFO pin
+        if txPower > 20:
+            txPower = 20
+        elif txPower > 14 and paPin == self.TX_POWER_RFO:
+            txPower = 14
+
+        paConfig = 0x00
+        outputPower = 0x00
+        if paPin == self.TX_POWER_RFO:
+            # txPower = Pmax - (15 - outputPower)
+            if txPower == 14:
+                # max power (Pmax) 14.4 dBm
+                paConfig = 0x60
+                outputPower = txPower + 1
+            else:
+                # max power (Pmax) 13.2 dBm
+                paConfig = 0x40
+                outputPower = txPower + 2
         else:
-            calFreqMin = self.CAL_IMG_902
-            calFreqMax = self.CAL_IMG_928
-        self.calibrateImage(calFreqMin, calFreqMax)
+            paConfig = 0xC0
+            paDac = 0x04
+            # txPower = 17 - (15 - outputPower)
+            if txPower > 17:
+                outputPower = 15
+                paDac = 0x07
+                self.setCurrentProtection(100)  # max current 100 mA
+            else:
+                if txPower < 2:
+                    txPower = 2
+                outputPower = txPower - 2
+                self.setCurrentProtection(140)  # max current 140 mA
+            # enable or disable +20 dBm option on PA_BOOST pin
+            self.writeRegister(self.REG_PA_DAC, paDac)
 
-        # calculate frequency and set frequency setting
-        rfFreq = int(frequency * 33554432 / 32000000)
-        self.setRfFrequency(rfFreq)
+        # set PA config
+        self.writeRegister(self.REG_PA_CONFIG, paConfig | outputPower)
 
-    def setTxPower(self, txPower: int, version=TX_POWER_SX1262):
-        #  maximum TX power is 22 dBm and 15 dBm for SX1261
-        if txPower > 22:
-            txPower = 22
-        elif txPower > 15 and version == self.TX_POWER_SX1261:
-            txPower = 15
+    def setRxGain(self, boost: int, level: int):
+        # valid RX gain level 0 - 6 (0 -> AGC on)
+        if level > 6:
+            level = 6
+        # boost LNA and automatic gain controller config
+        LnaBoostHf = 0x00
+        if boost:
+            LnaBoostHf = 0x03
+        AgcOn = 0x00
+        if level == self.RX_GAIN_AUTO:
+            AgcOn = 0x01
 
-        paDutyCycle = 0x00
-        hpMax = 0x00
-        deviceSel = 0x00
-        power = 0x0E
-        if version == self.TX_POWER_SX1261:
-            deviceSel = 0x01
-        # set parameters for PA config and TX params configuration
-        if txPower == 22:
-            paDutyCycle = 0x04
-            hpMax = 0x07
-            power = 0x16
-        elif txPower >= 20:
-            paDutyCycle = 0x03
-            hpMax = 0x05
-            power = 0x16
-        elif txPower >= 17:
-            paDutyCycle = 0x02
-            hpMax = 0x03
-            power = 0x16
-        elif txPower >= 14 and version == self.TX_POWER_SX1261:
-            paDutyCycle = 0x04
-            hpMax = 0x00
-            power = 0x0E
-        elif txPower >= 14 and version == self.TX_POWER_SX1262:
-            paDutyCycle = 0x02
-            hpMax = 0x02
-            power = 0x16
-        elif txPower >= 14 and version == self.TX_POWER_SX1268:
-            paDutyCycle = 0x04
-            hpMax = 0x06
-            power = 0x0F
-        elif txPower >= 10 and version == self.TX_POWER_SX1261:
-            paDutyCycle = 0x01
-            hpMax = 0x00
-            power = 0x0D
-        elif txPower >= 10 and version == self.TX_POWER_SX1268:
-            paDutyCycle = 0x00
-            hpMax = 0x03
-            power = 0x0F
-        else:
-            return
-
-        # set power amplifier and TX power configuration
-        self.setPaConfig(paDutyCycle, hpMax, deviceSel, 0x01)
-        self.setTxParams(power, self.PA_RAMP_800U)
-
-    def setRxGain(self, rxGain):
-        # set power saving or boosted gain in register
-        gain = self.POWER_SAVING_GAIN
-        if rxGain == self.RX_GAIN_BOOSTED:
-            gain = self.BOOSTED_GAIN
-            # set certain register to retain configuration after wake from sleep mode
-            self.writeRegister(self.REG_RX_GAIN, (gain,), 1)
-            self.writeRegister(0x029F, (0x01, 0x08, 0xAC), 3)
-        else:
-            self.writeRegister(self.REG_RX_GAIN, (gain,), 1)
+        # set gain and boost LNA config
+        self.writeRegister(self.REG_LNA, LnaBoostHf | (level << 5))
+        # enable or disable AGC
+        self.writeBits(self.REG_MODEM_CONFIG_3, AgcOn, 2, 1)
 
     def setLoRaModulation(self, sf: int, bw: int, cr: int, ldro: bool = False):
-        self._sf = sf
-        self._bw = bw
-        self._cr = cr
-        self._ldro = ldro
-
-        # valid spreading factor is between 5 and 12
-        if sf > 12:
-            sf = 12
-        elif sf < 5:
-            sf = 5
-        # select bandwidth options
-        if bw < 9100:
-            bw = self.BW_7800
-        elif bw < 13000:
-            bw = self.BW_10400
-        elif bw < 18200:
-            bw = self.BW_15600
-        elif bw < 26000:
-            bw = self.BW_20800
-        elif bw < 36500:
-            bw = self.BW_31250
-        elif bw < 52100:
-            bw = self.BW_41700
-        elif bw < 93800:
-            bw = self.BW_62500
-        elif bw < 187500:
-            bw = self.BW_125000
-        elif bw < 375000:
-            bw = self.BW_250000
-        else:
-            bw = self.BW_500000
-        # valid code rate denominator is between 4 and 8
-        cr = cr - 4
-        if cr > 4:
-            cr = 0
-        # set low data rate option
-        if ldro:
-            ldro = self.LDRO_ON
-        else:
-            ldro = self.LDRO_OFF
-
-        self.setModulationParamsLoRa(sf, bw, cr, ldro)
+        self.setSpreadingFactor(sf)
+        self.setBandwidth(bw)
+        self.setCodeRate(cr)
+        self.setLdroEnable(ldro)
 
     def setLoRaPacket(
         self,
-        headerType,
+        headerType: int,
         preambleLength: int,
         payloadLength: int,
         crcType: bool = False,
         invertIq: bool = False,
     ):
-        self._headerType = headerType
-        self._preambleLength = preambleLength
-        self._payloadLength = payloadLength
-        self._crcType = crcType
-        self._invertIq = invertIq
-
-        # filter valid header type config
-        if headerType != self.HEADER_IMPLICIT:
-            headerType = self.HEADER_EXPLICIT
-        # set CRC and invert IQ option
-        if crcType:
-            crcType = self.CRC_ON
-        else:
-            crcType = self.CRC_OFF
-        if invertIq:
-            invertIq = self.IQ_INVERTED
-        else:
-            invertIq = self.IQ_STANDARD
-
-        self.setPacketParamsLoRa(preambleLength, headerType, payloadLength, crcType, invertIq)
-        self._fixInvertedIq(invertIq)
+        self.setHeaderType(headerType)
+        self.setPreambleLength(preambleLength)
+        self.setPayloadLength(payloadLength)
+        self.setCrcEnable(crcType)
+        # self.setInvertIq(invertIq)
 
     def setSpreadingFactor(self, sf: int):
-        self.setLoRaModulation(sf, self._bw, self._cr, self._ldro)
+        self._sf = sf
+        # valid spreading factor is 6 - 12
+        if sf < 6:
+            sf = 6
+        elif sf > 12:
+            sf = 12
+        # set appropriate signal detection optimize and threshold
+        optimize = 0x03
+        threshold = 0x0A
+        if sf == 6:
+            optimize = 0x05
+            threshold = 0x0C
+        self.writeRegister(self.REG_DETECTION_OPTIMIZE, optimize)
+        self.writeRegister(self.REG_DETECTION_THRESHOLD, threshold)
+        # set spreading factor config
+        self.writeBits(self.REG_MODEM_CONFIG_2, sf, 4, 4)
 
     def setBandwidth(self, bw: int):
-        self.setLoRaModulation(self._sf, bw, self._cr, self._ldro)
+        self._bw = bw
+        bwCfg = 9  # 500 kHz
+        if bw < 9100:
+            bwCfg = 0  # 7.8 kHz
+        elif bw < 13000:
+            bwCfg = 1  # 10.4 kHz
+        elif bw < 18200:
+            bwCfg = 2  # 15.6 kHz
+        elif bw < 26000:
+            bwCfg = 3  # 20.8 kHz
+        elif bw < 36500:
+            bwCfg = 4  # 31.25 kHz
+        elif bw < 52100:
+            bwCfg = 5  # 41.7 kHz
+        elif bw < 93800:
+            bwCfg = 6  # 62.5 kHz
+        elif bw < 187500:
+            bwCfg = 7  # 125 kHz
+        elif bw < 375000:
+            bwCfg = 8  # 250 kHz
+        self.writeBits(self.REG_MODEM_CONFIG_1, bwCfg, 4, 4)
 
     def setCodeRate(self, cr: int):
-        self.setLoRaModulation(self._sf, self._bw, cr, self._ldro)
+        # valid code rate denominator is 5 - 8
+        if cr < 5:
+            cr = 4
+        elif cr > 8:
+            cr = 8
+        crCfg = cr - 4
+        self.writeBits(self.REG_MODEM_CONFIG_1, crCfg, 1, 3)
 
-    def setLdroEnable(self, ldro: bool = True):
-        self.setLoRaModulation(self._sf, self._bw, self._cr, ldro)
+    def setLdroEnable(self, ldro: bool):
+        ldroCfg = 0x00
+        if ldro:
+            ldroCfg = 0x01
+        self.writeBits(self.REG_MODEM_CONFIG_3, ldroCfg, 3, 1)
 
-    def setHeaderType(self, headerType):
-        self.setLoRaPacket(
-            self._preambleLength,
-            headerType,
-            self._payloadLength,
-            self._crcType,
-            self._invertIq,
-        )
+    def setHeaderType(self, headerType: int):
+        self._headerType = headerType
+        headerTypeCfg = self.HEADER_EXPLICIT
+        if headerType == self.HEADER_IMPLICIT:
+            headerTypeCfg = self.HEADER_IMPLICIT
+        self.writeBits(self.REG_MODEM_CONFIG_1, headerTypeCfg, 0, 1)
 
     def setPreambleLength(self, preambleLength: int):
-        self.setLoRaPacket(
-            preambleLength,
-            self._headerType,
-            self._payloadLength,
-            self._crcType,
-            self._invertIq,
-        )
+        self.writeRegister(self.REG_PREAMBLE_MSB, (preambleLength >> 8) & 0xFF)
+        self.writeRegister(self.REG_PREAMBLE_LSB, preambleLength & 0xFF)
 
     def setPayloadLength(self, payloadLength: int):
-        self.setLoRaPacket(
-            self._preambleLength,
-            self._headerType,
-            payloadLength,
-            self._crcType,
-            self._invertIq,
-        )
+        self._payloadLength = payloadLength
+        self.writeRegister(self.REG_PAYLOAD_LENGTH, payloadLength)
 
-    def setCrcEnable(self, crcType: bool = True):
-        self.setLoRaPacket(
-            self._preambleLength,
-            self._headerType,
-            self._payloadLength,
-            crcType,
-            self._invertIq,
-        )
+    def setCrcEnable(self, crcType: bool):
+        crcTypeCfg = 0x00
+        if crcType:
+            crcTypeCfg = 0x01
+        self.writeBits(self.REG_MODEM_CONFIG_2, crcTypeCfg, 2, 1)
 
-    def setInvertIq(self, invertIq: bool = True):
-        self.setLoRaPacket(
-            self._preambleLength,
-            self._headerType,
-            self._payloadLength,
-            self._crcType,
-            invertIq,
-        )
+    def setInvertIq(self, invertIq: bool):
+        invertIqCfg1 = 0x00
+        invertIqCfg2 = 0x1D
+        if invertIq:
+            invertIqCfg1 = 0x01
+            invertIqCfg2 = 0x19
+        self.writeBits(self.REG_INVERTIQ, invertIqCfg1, 0, 1)
+        self.writeBits(self.REG_INVERTIQ, invertIqCfg1, 6, 1)
+        self.writeRegister(self.REG_INVERTIQ2, invertIqCfg2)
 
     def setSyncWord(self, syncWord: int):
-        buf = ((syncWord >> 8) & 0xFF, syncWord & 0xFF)
-        if syncWord <= 0xFF:
-            buf = ((syncWord & 0xF0) | 0x04, (syncWord << 4) | 0x04)
-        self.writeRegister(self.REG_LORA_SYNC_WORD_MSB, buf, 2)
-
-    def setFskModulation(self, br: int, pulseShape: int, bandwidth: int, fdev: int):
-        self.setModulationParamsFsk(br, pulseShape, bandwidth, fdev)
-
-    def setFskPacket(
-        self,
-        preambleLength: int,
-        preambleDetector: int,
-        syncWordLength: int,
-        addrComp: int,
-        packetType: int,
-        payloadLength: int,
-        crcType: int,
-        whitening: int,
-    ):
-        self.setPacketParamsFsk(
-            preambleLength,
-            preambleDetector,
-            syncWordLength,
-            addrComp,
-            packetType,
-            payloadLength,
-            crcType,
-            whitening,
-        )
-
-    def setFskSyncWord(self, sw: tuple, swLen: int):
-        self.writeRegister(self.REG_FSK_SYNC_WORD_0, sw, swLen)
-
-    def setFskAddress(self, nodeAddr: int, broadcastAddr: int):
-        self.writeRegister(self.REG_FSK_NODE_ADDRESS, (nodeAddr, broadcastAddr), 2)
-
-    def setFskCrc(self, crcInit: int, crcPolynom: int):
-        buf = (crcInit >> 8, crcInit & 0xFF, crcPolynom >> 8, crcPolynom & 0xFF)
-        self.writeRegister(self.REG_FSK_CRC_INITIAL_MSB, buf, 4)
-
-    def setFskWhitening(self, whitening: int):
-        self.writeRegister(
-            self.REG_FSK_WHITENING_INITIAL_MSB, (whitening >> 8, whitening & 0xFF), 2
-        )
+        sw = syncWord
+        # keep compatibility between 1 and 2 bytes synchronize word
+        if syncWord > 0xFF:
+            sw = ((syncWord >> 8) & 0xF0) | (syncWord & 0x0F)
+        self.writeRegister(self.REG_SYNC_WORD, sw)
 
     ### TRANSMIT RELATED METHODS ###
 
     def beginPacket(self):
-        # reset payload length and buffer index
+        # reset TX buffer base address, FIFO address pointer and payload length
+        self.writeRegister(self.REG_FIFO_TX_BASE_ADDR, self.readRegister(self.REG_FIFO_ADDR_PTR))
         self._payloadTxRx = 0
-        self.setBufferBaseAddress(self._bufferIndex, (self._bufferIndex + 0xFF) % 0xFF)
-        # save current txen pin state and set txen pin to LOW
-        if self._txen != -1:
-            self._txState = _get_output(self._txen).value
-            _get_output(self._txen).off()
-        self._fixLoRaBw500(self._bw)
 
-    def endPacket(self, timeout: int = TX_SINGLE) -> bool:
+        # save current txen and rxen pin state and set txen pin to high and rxen pin to low
+        if self._txen != None and self._rxen != None:
+            self._txState = self._txen.input()
+            self._rxState = self._rxen.input()
+            self._txen.output(LoRaGpio.HIGH)
+            self._rxen.output(LoRaGpio.LOW)
+
+    def endPacket(self, timeout: int = 0) -> bool:
         # skip to enter TX mode when previous TX operation incomplete
-        if self.getMode == self.STATUS_MODE_TX:
+        if self.readRegister(self.REG_OP_MODE) & 0x07 == self.MODE_TX:
             return False
-        # clear previous interrupt and set TX done, and TX timeout as interrupt source
-        self._irqSetup(self.IRQ_TX_DONE | self.IRQ_TIMEOUT)
+
+        # clear IRQ flag from last TX or RX operation
+        self.writeRegister(self.REG_IRQ_FLAGS, 0xFF)
+
         # set packet payload length
-        self.setPacketParamsLoRa(
-            self._preambleLength,
-            self._headerType,
-            self._payloadTxRx,
-            self._crcType,
-            self._invertIq,
-        )
+        self.writeRegister(self.REG_PAYLOAD_LENGTH, self._payloadTxRx)
+
         # set status to TX wait
         self._statusWait = self.STATUS_TX_WAIT
-        self._statusIrq = 0x0000
-        # calculate TX timeout config
-        txTimeout = timeout << 6
-        if txTimeout > 0x00FFFFFF:
-            txTimeout = self.TX_SINGLE
-        # set device to transmit mode with configured timeout or single operation
-        self.setTx(txTimeout)
+        self._statusIrq = 0x00
+
+        # set device to transmit mode
+        self.writeRegister(self.REG_OP_MODE, self._modem | self.MODE_TX)
         self._transmitTime = time.time()
-        # set operation status to wait and attach TX interrupt handler
-        # IRQ event handling should be implemented in the higher-level driver using gpiozero Button
+
+        # set TX done interrupt on DIO0 and attach TX interrupt handler
+        if self._irq != None:
+            self.writeRegister(self.REG_DIO_MAPPING_1, self.DIO0_TX_DONE)
+            if isinstance(self._monitoring, Thread):
+                self._monitoring.join()
+            to = self._irqTimeout / 1000 if timeout == 0 else timeout / 1000
+            self._monitoring = Thread(target=self._irq.monitor, args=(self._interruptTx, to))
+            self._monitoring.start()
         return True
 
     def write(self, data, length: int = 0):
@@ -808,9 +499,10 @@ class SX126x(BaseLoRa):
             data = (int(data),)
         else:
             raise TypeError("input data must be list, tuple, integer or float")
-        # write data to buffer and update buffer index and payload
-        self.writeBuffer(self._bufferIndex, data, length)
-        self._bufferIndex = (self._bufferIndex + length) % 256
+
+        # write data to buffer and update payload
+        for i in range(length):
+            self.writeRegister(self.REG_FIFO, int(data[i]))
         self._payloadTxRx += length
 
     def put(self, data):
@@ -820,64 +512,66 @@ class SX126x(BaseLoRa):
             length = len(dataList)
         else:
             raise TypeError("input data must be bytes or bytearray")
-        # write data to buffer and update buffer index and payload
-        self.writeBuffer(self._bufferIndex, dataList, length)
-        self._bufferIndex = (self._bufferIndex + length) % 256
+
+        # write data to buffer and update payload
+        for i in range(length):
+            self.writeRegister(self.REG_FIFO, int(data[i]))
         self._payloadTxRx += length
 
     ### RECEIVE RELATED METHODS ###
 
-    def request(self, timeout: int = RX_SINGLE) -> bool:
+    def request(self, timeout: int = 0) -> bool:
         # skip to enter RX mode when previous RX operation incomplete
-        if self.getMode() == self.STATUS_MODE_RX:
+        rxMode = self.readRegister(self.REG_OP_MODE) & 0x07
+        if rxMode == self.MODE_RX_SINGLE or rxMode == self.MODE_RX_CONTINUOUS:
             return False
-        # clear previous interrupt and set RX done, RX timeout, header error, and CRC error as interrupt source
-        self._irqSetup(self.IRQ_RX_DONE | self.IRQ_TIMEOUT | self.IRQ_HEADER_ERR | self.IRQ_CRC_ERR)
-        # set status to RX wait or RX continuous wait
+
+        # clear IRQ flag from last TX or RX operation
+        self.writeRegister(self.REG_IRQ_FLAGS, 0xFF)
+
+        # save current txen and rxen pin state and set txen pin to low and rxen pin to high
+        if self._txen != None and self._rxen != None:
+            self._txState = self._txen.input()
+            self._rxState = self._rxen.input()
+            self._txen.output(LoRaGpio.LOW)
+            self._rxen.output(LoRaGpio.HIGH)
+
+        # set status to RX wait
         self._statusWait = self.STATUS_RX_WAIT
-        self._statusIrq = 0x0000
-        # calculate RX timeout config
-        rxTimeout = timeout << 6
-        if rxTimeout > 0x00FFFFFF:
-            rxTimeout = self.RX_SINGLE
+        self._statusIrq = 0x00
+
+        # select RX mode to RX continuous mode for RX single and continuos operation
+        rxMode = self.MODE_RX_CONTINUOUS
         if timeout == self.RX_CONTINUOUS:
-            rxTimeout = self.RX_CONTINUOUS
             self._statusWait = self.STATUS_RX_CONTINUOUS
-        # save current txen pin state and set txen pin to high
-        if self._txen != -1:
-            self._txState = _get_output(self._txen).value
-            _get_output(self._txen).on()
-        # set device to receive mode with configured timeout, single, or continuous operation
-        self.setRx(rxTimeout)
-        # IRQ event handling should be implemented in the higher-level driver using gpiozero Button
+        elif timeout > 0:
+            # Select RX mode to single mode for RX operation with timeout
+            rxMode = self.MODE_RX_SINGLE
+            # calculate and set symbol timeout
+            symbTimeout = int(timeout * self._bw / 1000) >> self._sf  # devided by 1000, ms to s
+            self.writeBits(self.REG_MODEM_CONFIG_2, (symbTimeout >> 8) & 0x03, 0, 2)
+            self.writeRegister(self.REG_SYMB_TIMEOUT_LSB, symbTimeout & 0xFF)
+
+        # set device to receive mode
+        self.writeRegister(self.REG_OP_MODE, self._modem | rxMode)
+
+        # set RX done interrupt on DIO0 and attach RX interrupt handler
+        if self._irq != None:
+            self.writeRegister(self.REG_DIO_MAPPING_1, self.DIO0_RX_DONE)
+            if isinstance(self._monitoring, Thread):
+                self._monitoring.join()
+            to = self._irqTimeout / 1000 if timeout == 0 else timeout / 1000
+            if timeout == self.RX_CONTINUOUS:
+                self._monitoring = Thread(
+                    target=self._irq.monitor_continuous, args=(self._interruptRxContinuous, to)
+                )
+                self._monitoring.setDaemon(True)
+            else:
+                self._monitoring = Thread(target=self._irq.monitor, args=(self._interruptRx, to))
+            self._monitoring.start()
         return True
 
-    def listen(self, rxPeriod: int, sleepPeriod: int) -> bool:
-        # skip to enter RX mode when previous RX operation incomplete
-        if self.getMode() == self.STATUS_MODE_RX:
-            return False
-        # clear previous interrupt and set RX done, RX timeout, header error, and CRC error as interrupt source
-        self._irqSetup(self.IRQ_RX_DONE | self.IRQ_TIMEOUT | self.IRQ_HEADER_ERR | self.IRQ_CRC_ERR)
-        # set status to RX wait or RX continuous wait
-        self._statusWait = self.STATUS_RX_WAIT
-        self._statusIrq = 0x0000
-        # calculate RX period and sleep period config
-        rxPeriod = rxPeriod << 6
-        sleepPeriod = sleepPeriod << 6
-        if rxPeriod > 0x00FFFFFF:
-            rxPeriod = 0x00FFFFFF
-        if sleepPeriod > 0x00FFFFFF:
-            sleepPeriod = 0x00FFFFFF
-        # save current txen pin state and set txen pin to high
-        if self._txen != -1:
-            self._txState = _get_output(self._txen).value
-            _get_output(self._txen).on()
-        # set device to receive mode with configured receive and sleep period
-        self.setRxDutyCycle(rxPeriod, sleepPeriod)
-        # IRQ event handling should be implemented in the higher-level driver using gpiozero Button
-        return True
-
-    def available(self) -> int:
+    def available(self):
         # get size of package still available to read
         return self._payloadTxRx
 
@@ -887,37 +581,43 @@ class SX126x(BaseLoRa):
         if length == 0:
             length = 1
             single = True
-        # read data from buffer and update buffer index and payload
-        buf = self.readBuffer(self._bufferIndex, length)
-        self._bufferIndex = (self._bufferIndex + length) % 256
+
+        # calculate actual read length and remaining payload length
         if self._payloadTxRx > length:
             self._payloadTxRx -= length
         else:
             self._payloadTxRx = 0
+        # read multiple bytes of received package in FIFO buffer
+        data = tuple()
+        for i in range(length):
+            data = data + (self.readRegister(self.REG_FIFO),)
+
         # return single byte or tuple
         if single:
-            return buf[0]
+            return data[0]
         else:
-            return buf
+            return data
 
     def get(self, length: int = 1) -> bytes:
-        # read data from buffer and update buffer index and payload
-        buf = self.readBuffer(self._bufferIndex, length)
-        self._bufferIndex = (self._bufferIndex + length) % 256
+        # calculate actual read length and remaining payload length
         if self._payloadTxRx > length:
             self._payloadTxRx -= length
         else:
             self._payloadTxRx = 0
+        # read data from FIFO buffer and update payload length
+        data = tuple()
+        for i in range(length):
+            data = data + (self.readRegister(self.REG_FIFO),)
+
         # return array of bytes
-        return bytes(buf)
+        return bytes(data)
 
     def purge(self, length: int = 0):
         # subtract or reset received payload length
-        if self._bufferIndex > length:
+        if (self._payloadTxRx > length) and length:
             self._payloadTxRx = self._payloadTxRx - length
         else:
             self._payloadTxRx = 0
-        self._bufferIndex += self._payloadTxRx
 
     ### WAIT, OPERATION STATUS, AND PACKET STATUS METHODS ###
 
@@ -925,42 +625,56 @@ class SX126x(BaseLoRa):
         # immediately return when currently not waiting transmit or receive process
         if self._statusIrq:
             return True
-        # wait transmit or receive process finish by checking IRQ status
-        irqStat = 0x0000
+
+        # wait transmit or receive process finish by checking interrupt status or IRQ status
+        irqFlag = 0x00
+        irqFlagMask = self.IRQ_RX_DONE | self.IRQ_RX_TIMEOUT | self.IRQ_CRC_ERR
+        if self._statusWait == self.STATUS_TX_WAIT:
+            irqFlagMask = self.IRQ_TX_DONE
         t = time.time()
-        while irqStat == 0x0000 and self._statusIrq == 0x0000:
+        while not (irqFlag & irqFlagMask) and self._statusIrq == 0x00:
             # only check IRQ status register for non interrupt operation
-            if self._irq == -1:
-                irqStat = self.getIrqStatus()
+            if self._irq == None:
+                irqFlag = self.readRegister(self.REG_IRQ_FLAGS)
             # return when timeout reached
-            if (time.time() - t) > timeout and timeout > 0:
+            if time.time() - t > timeout and timeout > 0:
                 return False
+
         if self._statusIrq:
             # immediately return when interrupt signal hit
             return True
+
         elif self._statusWait == self.STATUS_TX_WAIT:
-            # for transmit, calculate transmit time and set back txen pin to previous state
+            # calculate transmit time and set back txen and rxen pin to previous state
             self._transmitTime = time.time() - self._transmitTime
-            if self._txen != -1:
-                if self._txState:
-                    _get_output(self._txen).on()
-                else:
-                    _get_output(self._txen).off()
+            if self._txen != None and self._rxen != None:
+                self._txen.output(self._txState)
+                self._rxen.output(self._rxState)
+
         elif self._statusWait == self.STATUS_RX_WAIT:
-            # for receive, get received payload length and buffer index and set back txen pin to previous state
-            (self._payloadTxRx, self._bufferIndex) = self.getRxBufferStatus()
-            if self._txen != -1:
-                if self._txState:
-                    _get_output(self._txen).on()
-                else:
-                    _get_output(self._txen).off()
-            self._fixRxTimeout()
+            # terminate receive mode by setting mode to standby
+            self.standby()
+            # set pointer to RX buffer base address and get packet payload length
+            self.writeRegister(
+                self.REG_FIFO_ADDR_PTR, self.readRegister(self.REG_FIFO_RX_CURRENT_ADDR)
+            )
+            self._payloadTxRx = self.readRegister(self.REG_RX_NB_BYTES)
+            # set back txen and rxen pin to previous state
+            if self._txen != None and self._rxen != None:
+                self._txen.output(self._txState)
+                self._rxen.output(self._rxState)
+
         elif self._statusWait == self.STATUS_RX_CONTINUOUS:
-            # for receive continuous, get received payload length and buffer index and clear IRQ status
-            (self._payloadTxRx, self._bufferIndex) = self.getRxBufferStatus()
-            self.clearIrqStatus(0x03FF)
+            # set pointer to RX buffer base address and get packet payload length
+            self.writeRegister(
+                self.REG_FIFO_ADDR_PTR, self.readRegister(self.REG_FIFO_RX_CURRENT_ADDR)
+            )
+            self._payloadTxRx = self.readRegister(self.REG_RX_NB_BYTES)
+            # clear IRQ flag
+            self.writeRegister(self.REG_IRQ_FLAGS, 0xFF)
+
         # store IRQ status
-        self._statusIrq = irqStat
+        self._statusIrq = irqFlag
         return True
 
     def status(self) -> int:
@@ -970,13 +684,8 @@ class SX126x(BaseLoRa):
             self._statusIrq = 0x0000
 
         # get status for transmit and receive operation based on status IRQ
-        if statusIrq & self.IRQ_TIMEOUT:
-            if self._statusWait == self.STATUS_TX_WAIT:
-                return self.STATUS_TX_TIMEOUT
-            else:
-                return self.STATUS_RX_TIMEOUT
-        elif statusIrq & self.IRQ_HEADER_ERR:
-            return self.STATUS_HEADER_ERR
+        if statusIrq & self.IRQ_RX_TIMEOUT:
+            return self.STATUS_RX_TIMEOUT
         elif statusIrq & self.IRQ_CRC_ERR:
             return self.STATUS_CRC_ERR
         elif statusIrq & self.IRQ_TX_DONE:
@@ -997,90 +706,80 @@ class SX126x(BaseLoRa):
 
     def packetRssi(self) -> float:
         # get relative signal strength index (RSSI) of last incoming package
-        rssi_dbm, _, _ = self.getSignalMetrics()
-        return rssi_dbm
+        offset = self.RSSI_OFFSET_HF
+        if self._frequency < self.BAND_THRESHOLD:
+            offset = self.RSSI_OFFSET_LF
+        if self.readRegister(self.REG_VERSION) == 0x22:
+            offset = self.RSSI_OFFSET
+        return self.readRegister(self.REG_PKT_RSSI_VALUE) - offset
+
+    def rssi(self) -> float:
+        offset = self.RSSI_OFFSET_HF
+        if self._frequency < self.BAND_THRESHOLD:
+            offset = self.RSSI_OFFSET_LF
+        if self.readRegister(self.REG_VERSION) == 0x22:
+            offset = self.RSSI_OFFSET
+        return self.readRegister(self.REG_RSSI_VALUE) - offset
 
     def snr(self) -> float:
         # get signal to noise ratio (SNR) of last incoming package
-        _, snr_db, _ = self.getSignalMetrics()
-        return snr_db
-
-    def signalRssi(self) -> float:
-        _, _, signal_rssi_dbm = self.getSignalMetrics()
-        return signal_rssi_dbm
-
-    def getSignalMetrics(self) -> tuple:
-        """Return RSSI, SNR, and signal RSSI (all in dB) for the last packet."""
-        rssiPkt, snrPkt, signalRssiPkt = self.getPacketStatus()
-        return (
-            _rssi_register_to_dbm(rssiPkt),
-            snr_register_to_db(snrPkt),
-            _rssi_register_to_dbm(signalRssiPkt),
-        )
-
-    def rssiInst(self) -> float:
-        return self.getRssiInst() / -2.0
-
-    def getError(self) -> int:
-        error = self.getDeviceErrors()
-        self.clearDeviceErrors()
-        return error
+        return self.readRegister(self.REG_PKT_SNR_VALUE) / 4.0
 
     ### INTERRUPT HANDLER METHODS ###
 
-    def _irqSetup(self, irqMask):
-        # clear IRQ status of previous transmit or receive operation
-        self.clearIrqStatus(0x03FF)
-        # set selected interrupt source
-        dio1Mask = 0x0000
-        dio2Mask = 0x0000
-        dio3Mask = 0x0000
-        if self._dio == 2:
-            dio2Mask = irqMask
-        elif self._dio == 3:
-            dio3Mask = irqMask
-        else:
-            dio1Mask = irqMask
-        self.setDioIrqParams(irqMask, dio1Mask, dio2Mask, dio3Mask)
-
-    def _interruptTx(self, channel=None):
+    def _interruptTx(self):
         # calculate transmit time
         self._transmitTime = time.time() - self._transmitTime
-        # set back txen pin to previous state
-        if self._txen != -1:
-            if self._txState:
-                _get_output(self._txen).on()
-            else:
-                _get_output(self._txen).off()
-        # store IRQ status
-        self._statusIrq = self.getIrqStatus()
+
+        # store IRQ status as TX done
+        self._statusIrq = self.IRQ_TX_DONE
+
+        # set back txen and rxen pin to previous state
+        if self._txen != None and self._rxen != None:
+            self._txen.output(self._txState)
+            self._rxen.output(self._rxState)
+
         # call onTransmit function
         if callable(self._onTransmit):
             self._onTransmit()
 
-    def _interruptRx(self, channel=None):
-        # set back txen pin to previous state
-        if self._txen != -1:
-            if self._txState:
-                _get_output(self._txen).on()
-            else:
-                _get_output(self._txen).off()
-        self._fixRxTimeout()
+    def _interruptRx(self):
         # store IRQ status
-        self._statusIrq = self.getIrqStatus()
-        # get received payload length and buffer index
-        (self._payloadTxRx, self._bufferIndex) = self.getRxBufferStatus()
+        self._statusIrq = self.readRegister(self.REG_IRQ_FLAGS)
+        # set IRQ status to RX done when interrupt occured before register updated
+        if not self._statusIrq & 0xF0:
+            self._statusIrq = self.IRQ_RX_DONE
+
+        # terminate receive mode by setting mode to standby
+        self.writeBits(self.REG_OP_MODE, self.MODE_STDBY, 0, 3)
+
+        # set back txen and rxen pin to previous state
+        if self._txen != None and self._rxen != None:
+            self._txen.output(self._txState)
+            self._rxen.output(self._rxState)
+
+        # set pointer to RX buffer base address and get packet payload length
+        self.writeRegister(self.REG_FIFO_ADDR_PTR, self.readRegister(self.REG_FIFO_RX_CURRENT_ADDR))
+        self._payloadTxRx = self.readRegister(self.REG_RX_NB_BYTES)
+
         # call onReceive function
         if callable(self._onReceive):
             self._onReceive()
 
-    def _interruptRxContinuous(self, channel=None):
+    def _interruptRxContinuous(self):
         # store IRQ status
-        self._statusIrq = self.getIrqStatus()
-        # clear IRQ status
-        self.clearIrqStatus(0x03FF)
-        # get received payload length and buffer index
-        (self._payloadTxRx, self._bufferIndex) = self.getRxBufferStatus()
+        self._statusIrq = self.readRegister(self.REG_IRQ_FLAGS)
+        # set IRQ status to RX done when interrupt occured before register updated
+        if not self._statusIrq & 0xF0:
+            self._statusIrq = self.IRQ_RX_DONE
+
+        # clear IRQ flag from last TX or RX operation
+        self.writeRegister(self.REG_IRQ_FLAGS, 0xFF)
+
+        # set pointer to RX buffer base address and get packet payload length
+        self.writeRegister(self.REG_FIFO_ADDR_PTR, self.readRegister(self.REG_FIFO_RX_CURRENT_ADDR))
+        self._payloadTxRx = self.readRegister(self.REG_RX_NB_BYTES)
+
         # call onReceive function
         if callable(self._onReceive):
             self._onReceive()
@@ -1093,320 +792,25 @@ class SX126x(BaseLoRa):
         # register onReceive function to call every receive done
         self._onReceive = callback
 
-    ### SX126X API: OPERATIONAL MODES COMMANDS ###
+    ### SX127X DRIVER: UTILITIES ###
 
-    def setSleep(self, sleepConfig: int):
-        self._writeBytes(0x84, (sleepConfig,), 1)
+    def writeBits(self, address: int, data: int, position: int, length: int):
+        read = self._transfer(address & 0x7F, 0x00)
+        mask = (0xFF >> (8 - length)) << position
+        write = (data << position) | (read & ~mask)
+        self._transfer(address | 0x80, write)
 
-    def setStandby(self, stbyConfig: int):
-        self._writeBytes(0x80, (stbyConfig,), 1)
+    def writeRegister(self, address: int, data: int):
+        self._transfer(address | 0x80, data)
 
-    def setFs(self):
-        self._writeBytes(0xC1, (), 0)
+    def readRegister(self, address: int) -> int:
+        return self._transfer(address & 0x7F, 0x00)
 
-    def setTx(self, timeout: int):
-        buf = ((timeout >> 16) & 0xFF, (timeout >> 8) & 0xFF, timeout & 0xFF)
-        self._writeBytes(0x83, buf, 3)
-
-    def setRx(self, timeout: int):
-        buf = ((timeout >> 16) & 0xFF, (timeout >> 8) & 0xFF, timeout & 0xFF)
-        self._writeBytes(0x82, buf, 3)
-
-    def setTimerOnPreamble(self, enable: int):
-        self._writeBytes(0x9F, (enable,), 1)
-
-    def setRxDutyCycle(self, rxPeriod: int, sleepPeriod: int):
-        buf = (
-            (rxPeriod >> 16) & 0xFF,
-            (rxPeriod >> 8) & 0xFF,
-            rxPeriod & 0xFF,
-            (sleepPeriod >> 16) & 0xFF,
-            (sleepPeriod >> 8) & 0xFF,
-            sleepPeriod & 0xFF,
-        )
-        self._writeBytes(0x94, buf, 6)
-
-    def setCad(self):
-        self._writeBytes(0xC5, (), 0)
-
-    def setTxContinuousWave(self):
-        self._writeBytes(0xD1, (), 0)
-
-    def setTxInfinitePreamble(self):
-        self._writeBytes(0xD2, (), 0)
-
-    def setRegulatorMode(self, modeParam: int):
-        self._writeBytes(0x96, (modeParam,), 1)
-
-    def calibrate(self, calibParam: int):
-        self._writeBytes(0x89, (calibParam,), 1)
-
-    def calibrateImage(self, freq1: int, freq2: int):
-        buf = (freq1, freq2)
-        self._writeBytes(0x98, buf, 2)
-
-    def setPaConfig(self, paDutyCycle: int, hpMax: int, deviceSel: int, paLut: int):
-        buf = (paDutyCycle, hpMax, deviceSel, paLut)
-        self._writeBytes(0x95, buf, 4)
-
-    def setRxTxFallbackMode(self, fallbackMode: int):
-        self._writeBytes(0x93, (fallbackMode,), 1)
-
-    ### SX126X API: REGISTER AND BUFFER ACCESS COMMANDS ###
-
-    def writeRegister(self, address: int, data: tuple, nData: int):
-        buf = ((address >> 8) & 0xFF, address & 0xFF) + tuple(data)
-        self._writeBytes(0x0D, buf, nData + 2)
-
-    def readRegister(self, address: int, nData: int) -> tuple:
-        addr = ((address >> 8) & 0xFF, address & 0xFF)
-        buf = self._readBytes(0x1D, nData + 1, addr, 2)
-        return buf[1:]
-
-    def writeBuffer(self, offset: int, data: tuple, nData: int):
-        buf = (offset,) + tuple(data)
-        self._writeBytes(0x0E, buf, nData + 1)
-
-    def readBuffer(self, offset: int, nData: int) -> tuple:
-        buf = self._readBytes(0x1E, nData + 1, (offset,), 1)
-        return buf[1:]
-
-    ### SX126X API: DIO AND IRQ CONTROL ###
-
-    def setDioIrqParams(self, irqMask: int, dio1Mask: int, dio2Mask: int, dio3Mask: int):
-        buf = (
-            (irqMask >> 8) & 0xFF,
-            irqMask & 0xFF,
-            (dio1Mask >> 8) & 0xFF,
-            dio1Mask & 0xFF,
-            (dio2Mask >> 8) & 0xFF,
-            dio2Mask & 0xFF,
-            (dio3Mask >> 8) & 0xFF,
-            dio3Mask & 0xFF,
-        )
-        self._writeBytes(0x08, buf, 8)
-
-    def getIrqStatus(self) -> int:
-        buf = self._readBytes(0x12, 3)
-        return (buf[1] << 8) | buf[2]
-
-    def clearIrqStatus(self, clearIrqParam: int):
-        buf = ((clearIrqParam >> 8) & 0xFF, clearIrqParam & 0xFF)
-        self._writeBytes(0x02, buf, 2)
-
-    def setDio2AsRfSwitchCtrl(self, enable: int):
-        self._writeBytes(0x9D, (enable,), 1)
-
-    def setDio3AsTcxoCtrl(self, tcxoVoltage: int, delay: int):
-        buf = (
-            tcxoVoltage & 0xFF,
-            (delay >> 16) & 0xFF,
-            (delay >> 8) & 0xFF,
-            delay & 0xFF,
-        )
-        self._writeBytes(0x97, buf, 4)
-
-    ### SX126X API: RF, MODULATION, AND PACKET COMMANDS ###
-
-    def setRfFrequency(self, rfFreq: int):
-        buf = (
-            (rfFreq >> 24) & 0xFF,
-            (rfFreq >> 16) & 0xFF,
-            (rfFreq >> 8) & 0xFF,
-            rfFreq & 0xFF,
-        )
-        self._writeBytes(0x86, buf, 4)
-
-    def setPacketType(self, packetType: int):
-        self._writeBytes(0x8A, (packetType,), 1)
-
-    def getPakcetType(self) -> int:
-        buf = self._readBytes(0x11, 2)
-        return buf[1]
-
-    def setTxParams(self, power: int, rampTime: int):
-        buf = (power, rampTime)
-        self._writeBytes(0x8E, buf, 2)
-
-    def setModulationParamsLoRa(self, sf: int, bw: int, cr: int, ldro: int):
-        buf = (sf, bw, cr, ldro, 0, 0, 0, 0)
-        self._writeBytes(0x8B, buf, 8)
-
-    def setModulationParamsFsk(self, br: int, pulseShape: int, bandwidth: int, Fdev: int):
-        buf = (
-            (br >> 16) & 0xFF,
-            (br >> 8) & 0xFF,
-            br & 0xFF,
-            pulseShape,
-            bandwidth,
-            (br >> 16) & 0xFF,
-            (br >> 8) & 0xFF,
-            Fdev & 0xFF,
-        )
-        self._writeBytes(0x8B, buf, 8)
-
-    def setPacketParamsLoRa(
-        self,
-        preambleLength: int,
-        headerType: int,
-        payloadLength: int,
-        crcType: int,
-        invertIq: int,
-    ):
-        buf = (
-            (preambleLength >> 8) & 0xFF,
-            preambleLength & 0xFF,
-            headerType,
-            payloadLength,
-            crcType,
-            invertIq,
-            0,
-            0,
-            0,
-        )
-        self._writeBytes(0x8C, buf, 9)
-
-    def setPacketParamsFsk(
-        self,
-        preambleLength: int,
-        preambleDetector: int,
-        syncWordLength: int,
-        addrComp: int,
-        packetType: int,
-        payloadLength: int,
-        crcType: int,
-        whitening: int,
-    ):
-        buf = (
-            (preambleLength >> 8) & 0xFF,
-            preambleLength & 0xFF,
-            preambleDetector,
-            syncWordLength,
-            addrComp,
-            packetType,
-            payloadLength,
-            crcType,
-            whitening,
-        )
-        self._writeBytes(0x8C, buf, 9)
-
-    def setCadParams(
-        self,
-        cadSymbolNum: int,
-        cadDetPeak: int,
-        cadDetMin: int,
-        cadExitMode: int,
-        cadTimeout: int,
-    ):
-        buf = (
-            cadSymbolNum,
-            cadDetPeak,
-            cadDetMin,
-            cadExitMode,
-            (cadTimeout >> 16) & 0xFF,
-            (cadTimeout >> 8) & 0xFF,
-            cadTimeout & 0xFF,
-        )
-        self._writeBytes(0x88, buf, 7)
-
-    def setBufferBaseAddress(self, txBaseAddress: int, rxBaseAddress: int):
-        buf = (txBaseAddress, rxBaseAddress)
-        self._writeBytes(0x8F, buf, 2)
-
-    def setLoRaSymbNumTimeout(self, symbnum: int):
-        self._writeBytes(0xA0, (symbnum,), 1)
-
-    ### SX126X API: STATUS COMMANDS ###
-
-    def getStatus(self) -> int:
-        buf = self._readBytes(0xC0, 1)
-        return buf[0]
-
-    def getRxBufferStatus(self) -> tuple:
-        buf = self._readBytes(0x13, 3)
-        return buf[1:3]
-
-    def getPacketStatus(self) -> tuple:
-        buf = self._readBytes(0x14, 4)
-        return buf[1:4]
-
-    def getRssiInst(self) -> int:
-        buf = self._readBytes(0x15, 2)
-        return buf[1]
-
-    def getStats(self) -> tuple:
-        buf = self._readBytes(0x10, 7)
-        return ((buf[1] >> 8) | buf[2], (buf[3] >> 8) | buf[4], (buf[5] >> 8) | buf[6])
-
-    def resetStats(self):
-        buf = (0, 0, 0, 0, 0, 0)
-        self._writeBytes(0x00, buf, 6)
-
-    def getDeviceErrors(self) -> int:
-        buf = self._readBytes(0x17, 2)
-        return buf[1]
-
-    def clearDeviceErrors(self):
-        buf = (0, 0)
-        self._writeBytes(0x07, buf, 2)
-
-    ### SX126X API: WORKAROUND FUNCTIONS ###
-
-    def _fixLoRaBw500(self, bw: int):
-        packetType = self.getPakcetType()
-        buf = self.readRegister(self.REG_TX_MODULATION, 1)
-        value = buf[0] | 0x04
-        if packetType == self.LORA_MODEM and bw == self.BW_500000:
-            value = buf[0] & 0xFB
-        self.writeRegister(self.REG_TX_MODULATION, (value,), 1)
-
-    def _fixResistanceAntenna(self):
-        buf = self.readRegister(self.REG_TX_CLAMP_CONFIG, 1)
-        value = buf[0] | 0x1E
-        self.writeRegister(self.REG_TX_CLAMP_CONFIG, (value,), 1)
-
-    def _fixRxTimeout(self):
-        self.writeRegister(self.REG_RTC_CONTROL, (0,), 1)
-        buf = self.readRegister(self.REG_EVENT_MASK, 1)
-        value = buf[0] | 0x02
-        self.writeRegister(self.REG_EVENT_MASK, (value,), 1)
-
-    def _fixInvertedIq(self, invertIq: bool):
-        buf = self.readRegister(self.REG_IQ_POLARITY_SETUP, 1)
-        value = buf[0] & 0xFB
-        if invertIq:
-            value = buf[0] | 0x04
-        self.writeRegister(self.REG_IQ_POLARITY_SETUP, (value,), 1)
-
-    ### SX126X API: UTILITIES ###
-
-    def _writeBytes(self, opCode: int, data: tuple, nBytes: int):
-        if self.busyCheck():
-            return
-        # Ensure CS starts high, then pull low with setup time
-        _get_output(self._cs_define).on()  # Ensure initial high state
-        _get_output(self._cs_define).off()
-        time.sleep(0.000001)  # 1µs setup time for CS
-        buf = [opCode]
-        for i in range(nBytes):
-            buf.append(data[i])
-        spi.xfer2(buf)
-        time.sleep(0.000001)  # 1µs hold time before CS release
-        _get_output(self._cs_define).on()
-
-    def _readBytes(self, opCode: int, nBytes: int, address: tuple = (), nAddress: int = 0) -> tuple:
-        if self.busyCheck():
-            return ()
-        # Ensure CS starts high, then pull low with setup time
-        _get_output(self._cs_define).on()  # Ensure initial high state
-        _get_output(self._cs_define).off()
-        time.sleep(0.000001)  # 1µs setup time for CS
-        buf = [opCode]
-        for i in range(nAddress):
-            buf.append(address[i])
-        for i in range(nBytes):
-            buf.append(0x00)
-        feedback = spi.xfer2(buf)
-        time.sleep(0.000001)  # 1µs hold time before CS release
-        _get_output(self._cs_define).on()
-        return tuple(feedback[nAddress + 1 :])
+    def _transfer(self, address: int, data: int) -> int:
+        buf = [address, data]
+        self._cs.output(LoRaGpio.LOW)
+        feedback = self._spi.transfer(buf)
+        self._cs.output(LoRaGpio.HIGH)
+        if len(feedback) == 2:
+            return int(feedback[1])
+        return -1
