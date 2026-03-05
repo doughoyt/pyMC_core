@@ -31,10 +31,10 @@ class SX1276Radio(LoRaRadio):
         self,
         bus_id: int = 0,
         cs_id: int = 0,
-        cs_pin: int = -1,
-        reset_pin: int = 18,
-        irq_pin: int = 16,
-        txen_pin: int = 6,
+        cs_pin: int = 7,
+        reset_pin: int = 25,
+        irq_pin: int = 22,
+        txen_pin: int = -1,
         rxen_pin: int = -1,
         txled_pin: int = -1,
         rxled_pin: int = -1,
@@ -213,17 +213,7 @@ class SX1276Radio(LoRaRadio):
         self.lora.standby()
         time.sleep(0.01)  # Give hardware time to enter standby mode
 
-        # Check if standby mode was set correctly (different methods for different boards)
-        if use_busy_check:
-            if self.lora.busyCheck():
-                logger.error("Something wrong, can't set to standby mode")
-                return False
-        else:
-            if self.lora.getMode() != self.lora.STATUS_MODE_STDBY_RC:
-                logger.error("Something wrong, can't set to standby mode")
-                return False
-
-        self.lora.setPacketType(self.lora.LORA_MODEM)
+        self.lora.setModem(self.lora.LORA_MODEM)
         return True
 
     def _handle_interrupt(self):

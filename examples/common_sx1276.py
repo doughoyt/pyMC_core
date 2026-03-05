@@ -50,7 +50,7 @@ def create_radio(radio_type: str = "rfm95w", serial_port: str = "/dev/ttyUSB0") 
                 "cs_id": 0,
                 "cs_pin": 7,
                 "reset_pin": 25,
-                "irq_pin": 16,
+                "irq_pin": 22,
                 "txen_pin": -1,
                 "rxen_pin": -1,
                 "frequency": int(910.525 * 1000000),  # US: 910.525 MHz
