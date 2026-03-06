@@ -549,56 +549,10 @@ class SX1276Radio(LoRaRadio):
                     logger.warning(f"Could not setup RX LED pin {self.rxled_pin}")
 
             if True:  # Use full initialization
-                # Reset RF module and set to standby
-                if not self._basic_radio_setup(use_busy_check=False):
-                    return False
-                self.lora._fixResistanceAntenna()
-                # Configure TCXO, regulator, calibration and RF switch
-                if self.use_dio3_tcxo:
-                    # Map voltage to DIO3 constants following Meshtastic pattern
-                    voltage_map = {
-                        1.6: self.lora.DIO3_OUTPUT_1_6,
-                        1.7: self.lora.DIO3_OUTPUT_1_7,
-                        1.8: self.lora.DIO3_OUTPUT_1_8,
-                        2.2: self.lora.DIO3_OUTPUT_2_2,
-                        2.4: self.lora.DIO3_OUTPUT_2_4,
-                        2.7: self.lora.DIO3_OUTPUT_2_7,
-                        3.0: self.lora.DIO3_OUTPUT_3_0,
-                        3.3: self.lora.DIO3_OUTPUT_3_3,
-                    }
-
-                    voltage_constant = voltage_map.get(self.dio3_tcxo_voltage)
-                    if voltage_constant is None:
-                        closest_voltage = min(
-                            voltage_map.keys(), key=lambda x: abs(x - self.dio3_tcxo_voltage)
-                        )
-                        voltage_constant = voltage_map[closest_voltage]
-                        logger.debug(
-                            f"DIO3 TCXO voltage {self.dio3_tcxo_voltage}V "
-                            f"mapped to closest {closest_voltage}V"
-                        )
-                    else:
-                        logger.debug(f"DIO3 TCXO voltage {self.dio3_tcxo_voltage}V mapped exactly")
-
-                    # Set TCXO with 5ms delay (standard value)
-                    self.lora.setDio3TcxoCtrl(voltage_constant, self.lora.TCXO_DELAY_5)
-                    logger.info(f"DIO3 TCXO enabled: {self.dio3_tcxo_voltage}V, 5ms delay")
-                    time.sleep(0.05)  # Allow TCXO to stabilize
-                else:
-                    logger.debug("DIO3 TCXO is not enabled")
-
-                self.lora.setRegulatorMode(self.lora.REGULATOR_DC_DC)
-                self.lora.calibrate(0x7F)
-                self.lora.setDio2RfSwitch(self.use_dio2_rf)
-                if self.use_dio2_rf:
-                    logger.info("DIO2 RF switch control enabled")
-
                 # Set packet type and frequency
                 rfFreq = int(self.frequency * 33554432 / 32000000)
-                self.lora.setRfFrequency(rfFreq)
+                self.lora.setFrequency(rfFreq)
 
-                # Set RX gain and TX power
-                self.lora.writeRegister(self.lora.REG_RX_GAIN, [self.lora.RX_GAIN_POWER_SAVING], 1)
                 # Use setTxPower for automatic PA configuration based on power level
                 # For E22 modules: 22 dBm from SX1276 → ~30 dBm (1W) via external YP2233W PA
                 logger.info(f"Setting TX power to {self.tx_power} dBm during initialization")
@@ -615,18 +569,14 @@ class SX1276Radio(LoRaRadio):
                 self.lora.setLoRaModulation(
                     self.spreading_factor, self.bandwidth, self.coding_rate, ldro
                 )
-                self.lora.setPacketParamsLoRa(
-                    self.preamble_length,
+                self.lora.setLoRaPacket(
                     self.lora.HEADER_EXPLICIT,
+                    self.preamble_length,
                     64,  # Initial payload length
                     self.lora.CRC_ON,
                     self.lora.IQ_STANDARD,
                 )
 
-                # Configure RX interrupts
-                rx_mask = self._get_rx_irq_mask()
-                self.lora.clearIrqStatus(0xFFFF)
-                self.lora.setDioIrqParams(rx_mask, rx_mask, self.lora.IRQ_NONE, self.lora.IRQ_NONE)
                 # Configure RX gain for maximum sensitivity (boosted mode)
                 self.lora.setRxGain(self.lora.RX_GAIN_BOOSTED)
 
@@ -653,30 +603,6 @@ class SX1276Radio(LoRaRadio):
             self._initialized = True
             logger.info("SX1276 radio initialized successfully")
 
-            # Start RX IRQ background handler if using interrupts (only once)
-            try:
-                if self._interrupt_setup:
-                    # Check if task is already running to prevent duplicates
-                    if (
-                        not hasattr(self, "_rx_irq_task")
-                        or self._rx_irq_task is None
-                        or self._rx_irq_task.done()
-                    ):
-                        try:
-                            loop = asyncio.get_running_loop()
-                            # Capture event loop for thread-safe interrupt handling
-                            self._event_loop = loop
-                        except RuntimeError:
-                            # No event loop running, we'll start the task later
-                            # when one is available
-                            return True
-
-                        self._rx_irq_task = loop.create_task(self._rx_irq_background_task())
-                        logger.debug("[RX] RX IRQ background task started")
-                    else:
-                        logger.debug("[RX] RX IRQ background task already running")
-            except Exception as e:
-                logger.warning(f"Failed to start RX IRQ background handler: {e}")
             return True
         except Exception as e:
             logger.error(f"Failed to initialize SX1276 radio: '{e}'")
